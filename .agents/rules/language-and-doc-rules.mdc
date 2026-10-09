@@ -1,0 +1,23 @@
+---
+description: Language consistency and current operational documentation
+alwaysApply: true
+---
+
+# Language and Documentation Rules
+
+## Decisions
+
+- Write code identifiers, comments, PHPDoc, developer documentation and API/OpenAPI/Postman/Apifox descriptions in English.
+- Match the user's conversation language. Maintain the existing Chinese user guide in Chinese when changing its documented flows; language policy must not erase localized guidance.
+- Keep UI text concrete about the action, its requirements and observed result. Preserve distinctions between repository readiness, host trust, worker activity and deployment outcome.
+
+## Current Truth
+
+- README, architecture, operations and user guides describe the current system. Replace stale statements rather than append a narrative about old behavior.
+- Put dated review findings and rule history in review reports or changelogs. Logs and archives are historical user records, never active project rules.
+- Document limitations honestly: a queued job is not executing, reconciliation is not success, code update is not rollback, and a local Git test is not a real SSH pilot.
+
+## Verification
+
+- When a command, permission, state, response contract or recovery flow changes, update the relevant current documentation and translations.
+- Verify examples against routes and command signatures. Never include credentials, MFA secrets or deployment key material in documentation or screenshots.

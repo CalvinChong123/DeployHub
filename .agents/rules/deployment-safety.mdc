@@ -1,0 +1,28 @@
+---
+description: Preserve reviewed deployment state, remote execution safety and recovery ownership
+globs: "app/Services/Deployment/**/*.php,app/Jobs/ExecuteDeployment.php,app/Http/Controllers/DeploymentController.php,app/Models/Deployment*.php,app/Console/Commands/ReconcileDeployments.php,config/deployhub.php,config/queue.php,tests/Feature/*Deployment*Test.php,tests/Feature/PipelineRecoveryTest.php,tests/Feature/ConcurrentWorkerTest.php"
+alwaysApply: false
+---
+
+# Deployment Safety
+
+## Context
+
+Every deployment freezes a reviewed configuration and exact base/target SHA. A database reservation, shared environment lock, atomic claim and execution token protect against concurrent workers.
+
+## Decisions
+
+- Trace preview, confirmation, approval, enqueue, execution, cancellation and reconciliation before changing a state or candidate field. Update digest validation and worker checks with any new candidate metadata; do not mutate saved candidates.
+- Require a clean canonical root, exact registered origin and branch, successful fetch, fast-forward ancestry and unchanged reviewed base/target. Never substitute the latest origin SHA at execution time.
+- Preserve the typed command allowlist, POSIX quoting, disabled Git hooks and overwrite protection for ignored files. Do not add raw shell input, migrations, reset/clean, force-pull or implicit Composer scripts/plugins.
+- Recovery is a new reviewed candidate linked to a failed deployment whose code was updated. It requires fresh preflight with HEAD and fetched origin at the failed target, fresh grants/MFA, current configuration and fresh independent production approval.
+- Recovery skips the Git merge and reruns all selected pipeline steps. Show that replay explicitly; do not silently resume uncertain steps or offer recovery for unknown state without reconciliation.
+- Recheck requester and approver grants, digest, expiry and configuration before execution and each step. Requesters cannot approve their own production or protected candidate.
+- Keep reservation plus job creation atomic and enforce execution ownership when changing worker state. Duplicated jobs must not quarantine another worker's execution.
+- Preserve partial results on known failure. Connection loss, timeouts, unexpected faults and final HEAD mismatch require unknown-state quarantine. Release quarantine only after an administrator's attestation and repository inspection.
+- Buffer bounded whole-command output and redact known secrets before persistence. A selected health check requires verified HTTPS and a 2xx result without redirects.
+
+## Verification
+
+- Exercise normal success, partial failure/recovery, production approval, permission/configuration revocation, cancellation, stale SHA, duplicate execution and unknown-state quarantine for changes to this flow.
+- Use real local Git tests for Git semantics and separate-worker tests for ownership changes; keep their fixture roots guarded and isolated from live data.

@@ -1,0 +1,25 @@
+---
+description: Keep typed Vue responses, pagination and live deployment actions coherent
+globs: "app/Http/Controllers/HubController.php,app/Http/Controllers/DeploymentController.php,resources/js/hub-types.ts,resources/js/Pages/Hub/*.vue,resources/js/Components/HubPagination.vue"
+alwaysApply: false
+---
+
+# Inertia Contracts
+
+## Context
+
+Controller props and typed Vue pages form one contract. Deployment detail receives polling updates independently of the initial page response.
+
+## Decisions
+
+- Update controller props, `hub-types.ts` and every consuming component together when changing response shape. Keep form validation errors and flash failures visible at the action that caused them.
+- Filter approvals, expiry, search and deployment state on the server before pagination. Keep navigation to older records and preserve filter query parameters; never infer an empty approval list from a truncated all-state history.
+- Preserve environment tabs and scroll during pagination. Reset to the first page when filters change, and clear debounce/poll timers on unmount.
+- Base state-dependent buttons on the current polled deployment state and code-update status, while server authorization remains decisive. Check actions that become available after queued/running transitions to failure.
+- Display fresh recovery provenance, replayed steps and independent approval requirements before confirmation. Do not imply that recovery reuses the old approval or rolls back code.
+- Show affected members and an explicit choice before a server change expands their access. Reflect the same boundary and validation condition in the backend.
+
+## Verification
+
+- Build the typed frontend and inspect the changed forms/pages. Test server-side list/filter/pagination behavior with more than one page of records.
+- For deployment detail changes, verify queued/running/failed/unknown controls, polling failure messaging and cleanup when navigating away.

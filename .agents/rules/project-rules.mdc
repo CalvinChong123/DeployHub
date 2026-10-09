@@ -1,0 +1,28 @@
+---
+description: Shared decisions for safe DeployHub changes and verification
+alwaysApply: true
+---
+
+# Project Rules
+
+## Context
+
+DeployHub manages remote deployment side effects through Laravel, Inertia and Vue. Local application data is valuable; tests use isolated SQLite and disposable remote adapters.
+
+## Decisions
+
+- Inspect the closest controller, policy, service, request, component and test before choosing an implementation. Keep user-authorized changes scoped; avoid introducing abstractions merely for consistency.
+- Check `composer.json` and `composer.lock` PHP/framework requirements before selecting a runtime or package API. Read workstation command preferences from ignored local rules; do not put OS defaults or absolute runtime paths in shared rules.
+- Preserve unrelated staged and unstaged work. Inspect Git status before edits; never reset or clean the checkout to make a task easier. Use `codex/` when creating a branch unless the user specifies another prefix.
+- Use additive migrations for schema changes. Do not run fresh/reset/rollback, reinstall DeployHub, reseed live data, regenerate `APP_KEY`, or change real target credentials as a testing shortcut.
+- Keep reservation and database enqueue in the same primary-database transaction. A queue-driver change requires an admission/outbox design, not only a configuration switch.
+- Coordinate queue timeout, retry-after, command budget, lock lease and reconciliation changes together. Do not assume Unix worker signals behave identically on Windows.
+- Never contact real deployment targets or execute remote maintenance to validate code without user authorization. Use `tests/Support` adapters for automated verification; these must remain unavailable through production bindings.
+- Treat recursive deletion, live database deletion and remote commands as consequential operations. Validate disposable fixture boundaries before cleanup; follow user authorization and platform safety requirements.
+
+## Verification
+
+- Add regression coverage for behavior fixes, especially side effects, authorization and state transitions. Run targeted tests first, then the full suite for deployment/access changes.
+- Use the selected compatible PHP runtime for PHPUnit and Pint. Isolate tests with `phpunit.xml`; do not substitute the live MySQL database. Enable PDO SQLite/SQLite explicitly when needed.
+- Run `npm run build` for Vue/TypeScript contract changes, `npm run format:check` for frontend changes and Pint for changed PHP. Inspect user flows when forms, navigation or live status change.
+- Update operational documentation affected by behavior changes. Do not claim real SSH or production validation from fake transports or local Git tests.
