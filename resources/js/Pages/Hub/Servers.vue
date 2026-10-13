@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { Head, useForm, usePage, router } from "@inertiajs/vue3";
 import HubLayout from "@/Layouts/HubLayout.vue";
 import HubStatus from "@/Components/HubStatus.vue";
 import HubErrors from "@/Components/HubErrors.vue";
 import { date, type Server } from "@/hub-types";
-defineProps<{ servers: Server[] }>();
+const props = defineProps<{ servers: Server[] }>();
 const page = usePage<any>();
 const adding = ref(false);
 const selected = ref<Server | null>(null);
 const rotating = ref(false);
 const editing = ref(false);
+const currentServer = computed(() =>
+    props.servers.find((server) => server.id === selected.value?.id),
+);
 const connection = useForm({ name: "", host: "", port: 22, username: "" });
 const form = useForm({
     name: "",
@@ -21,13 +24,24 @@ const form = useForm({
     passphrase: "",
 });
 const action = useForm({});
-const verification = useForm({ fingerprint: "", verified_out_of_band: false });
+const verification = useForm({
+    fingerprint: "",
+    trust_method: "first_use",
+    trust_first_use: false,
+    verified_out_of_band: false,
+});
 const rotate = useForm({ private_key: "", passphrase: "" });
 watch(
     () => page.props.flash?.fingerprint,
     (value) => {
-        if (value && value.server_id === selected.value?.id)
+        if (value && value.server_id === selected.value?.id) {
+            verification.defaults(
+                "trust_method",
+                currentServer.value?.fingerprint ? "independent" : "first_use",
+            );
+            verification.reset();
             verification.fingerprint = value.value;
+        }
     },
 );
 function select(server: Server) {
@@ -38,6 +52,10 @@ function select(server: Server) {
     connection.host = server.host || "";
     connection.port = server.port || 22;
     connection.username = server.username || "";
+    verification.defaults(
+        "trust_method",
+        server.fingerprint ? "independent" : "first_use",
+    );
     verification.reset();
     form.reset("private_key", "passphrase");
     rotate.reset();
@@ -249,7 +267,7 @@ function remove(server: Server) {
                     Current pinned host key:
                     <code>{{
                         servers.find((s) => s.id === selected?.id)
-                            ?.fingerprint || "Not verified"
+                            ?.fingerprint || "Not saved"
                     }}</code>
                 </div>
                 <div class="stack">
@@ -261,7 +279,9 @@ function remove(server: Server) {
                         Discover fingerprint</button
                     ><button
                         class="btn primary"
-                        :disabled="action.processing"
+                        :disabled="
+                            action.processing || !currentServer?.fingerprint
+                        "
                         @click="
                             action.post(
                                 `/servers/${selected.id}/connection-test`,
@@ -275,6 +295,14 @@ function remove(server: Server) {
                         Delete server
                     </button>
                 </div>
+                <p
+                    v-if="!currentServer?.fingerprint"
+                    class="muted"
+                    style="margin-top: 12px"
+                >
+                    Discover and save a trusted fingerprint to enable
+                    authentication testing.
+                </p>
                 <form
                     v-if="verification.fingerprint"
                     style="margin-top: 24px"
@@ -289,21 +317,86 @@ function remove(server: Server) {
                         Discovered fingerprint:
                         <code>{{ verification.fingerprint }}</code>
                     </div>
-                    <label class="check"
-                        ><input
-                            v-model="verification.verified_out_of_band"
-                            type="checkbox"
-                            required
-                        />I compared this fingerprint with a trusted source
-                        outside DeployHub.</label
-                    ><button
+                    <div v-if="!currentServer?.fingerprint" class="field">
+                        <label for="trust_method"
+                            >How to trust this server</label
+                        >
+                        <select
+                            id="trust_method"
+                            v-model="verification.trust_method"
+                            @change="
+                                verification.trust_first_use = false;
+                                verification.verified_out_of_band = false;
+                            "
+                        >
+                            <option value="first_use">
+                                Trust on first use
+                            </option>
+                            <option value="independent">
+                                Verify with a trusted source
+                            </option>
+                        </select>
+                    </div>
+                    <template
+                        v-if="
+                            verification.trust_method === 'first_use' &&
+                            !currentServer?.fingerprint
+                        "
+                    >
+                        <p class="muted" style="margin: 16px 0">
+                            Accept this server's first discovered fingerprint
+                            without comparing another source. Future connections
+                            must match the saved fingerprint; changes will be
+                            blocked.
+                        </p>
+                        <label class="check">
+                            <input
+                                v-model="verification.trust_first_use"
+                                type="checkbox"
+                                required
+                            />
+                            I trust {{ currentServer?.host }}:{{
+                                currentServer?.port
+                            }}
+                            and accept this fingerprint for the first
+                            connection.
+                        </label>
+                    </template>
+                    <template v-else>
+                        <p
+                            v-if="currentServer?.fingerprint"
+                            class="notice warning"
+                            style="margin: 16px 0"
+                        >
+                            A fingerprint is already saved. Replacing it
+                            requires verification with a trusted source outside
+                            DeployHub.
+                        </p>
+                        <label class="check"
+                            ><input
+                                v-model="verification.verified_out_of_band"
+                                type="checkbox"
+                                required
+                            />I compared this fingerprint with a trusted source
+                            outside DeployHub.</label
+                        >
+                    </template>
+                    <button
                         class="btn primary"
                         :disabled="
                             verification.processing ||
-                            !verification.verified_out_of_band
+                            !(verification.trust_method === 'first_use' &&
+                            !currentServer?.fingerprint
+                                ? verification.trust_first_use
+                                : verification.verified_out_of_band)
                         "
                     >
-                        Pin verified fingerprint
+                        {{
+                            verification.trust_method === "first_use" &&
+                            !currentServer?.fingerprint
+                                ? "Trust & save fingerprint"
+                                : "Pin verified fingerprint"
+                        }}
                     </button>
                 </form>
                 <form

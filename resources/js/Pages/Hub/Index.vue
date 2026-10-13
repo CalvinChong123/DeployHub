@@ -10,6 +10,7 @@ import {
     type Project,
     type Deployment,
     type Paginated,
+    inspectionLabel,
 } from "@/hub-types";
 const props = defineProps<{
     section: string;
@@ -62,42 +63,58 @@ const history = computed(() => props.deployments.data);
     <Head :title="title" />
     <HubLayout
         :title="title"
-        subtitle="A clear view of your projects, environments and every deployment."
+        :subtitle="
+            section === 'projects.index'
+                ? 'Your deployment targets and latest results.'
+                : section === 'approvals'
+                  ? 'Review requests before they can deploy.'
+                  : 'Recent deployments and requests that need your attention.'
+        "
     >
         <template #actions
-            ><Link v-if="admin" href="/projects/create" class="btn primary"
+            ><Link
+                v-if="
+                    admin && ['dashboard', 'projects.index'].includes(section)
+                "
+                href="/projects/create"
+                class="btn primary"
                 ><span>＋</span>Add project</Link
             ></template
         >
         <div v-if="section === 'dashboard'" class="stats-grid">
-            <div
+            <Link
                 v-for="item in [
                     {
                         label: 'Projects',
                         value: stats.projects,
                         detail: 'Visible in your workspace',
                         icon: '▤',
+                        href: '/projects',
                     },
                     {
-                        label: 'Environments',
-                        value: stats.environments,
-                        detail: 'Authorized deployment targets',
-                        icon: '◈',
-                    },
-                    {
-                        label: 'Deployments',
-                        value: stats.deployments,
+                        label: 'Failed deployments',
+                        value: stats.failed || 0,
                         detail: 'In the last 30 days',
+                        icon: '!',
+                        href: '/activity?state=failed',
+                    },
+                    {
+                        label: 'Scheduled',
+                        value: stats.scheduled || 0,
+                        detail: 'Confirmed and waiting',
                         icon: '↗',
+                        href: '/activity?state=scheduled',
                     },
                     {
                         label: 'Needs approval',
                         value: stats.approvals,
                         detail: 'Independent review required',
                         icon: '✓',
+                        href: '/approvals',
                     },
                 ]"
                 :key="item.label"
+                :href="item.href"
                 class="stat-card"
             >
                 <div class="stat-label">
@@ -105,13 +122,9 @@ const history = computed(() => props.deployments.data);
                 </div>
                 <div class="stat-value">{{ item.value }}</div>
                 <div class="stat-detail">{{ item.detail }}</div>
-            </div>
+            </Link>
         </div>
-        <div
-            class="notice"
-            :class="worker.online ? 'success' : 'warning'"
-            role="status"
-        >
+        <div v-if="!worker.online" class="notice warning" role="status">
             <strong>{{
                 worker.online
                     ? "Queue worker online"
@@ -126,6 +139,10 @@ const history = computed(() => props.deployments.data);
                 }}
                 Last heartbeat: {{ date(worker.seen_at) }}</span
             >
+        </div>
+        <div v-else class="service-line" role="status">
+            <HubStatus state="ready" label="Worker online" />
+            <span>Last observed {{ date(worker.seen_at) }}</span>
         </div>
         <section
             v-if="['dashboard', 'projects.index'].includes(section)"
@@ -172,10 +189,9 @@ const history = computed(() => props.deployments.data);
                     <thead>
                         <tr>
                             <th>Project</th>
-                            <th>Environment</th>
-                            <th>Branch / server</th>
-                            <th>Readiness</th>
-                            <th>Last checked</th>
+                            <th>Target</th>
+                            <th>Latest deployment</th>
+                            <th>Incoming</th>
                             <th></th>
                         </tr>
                     </thead>
@@ -195,24 +211,91 @@ const history = computed(() => props.deployments.data);
                                 </p>
                             </td>
                             <td>
-                                <span class="badge">{{ row.env.name }}</span>
-                                <p v-if="row.env.production">
-                                    Independent approval
+                                <code>{{ row.env.branch }}</code>
+                                <p>
+                                    <span class="badge">{{
+                                        row.env.name
+                                    }}</span>
+                                    · {{ row.env.server.name }}
                                 </p>
+                                <small v-if="row.env.production" class="muted"
+                                    >Production · approval required</small
+                                >
                             </td>
                             <td>
-                                <code>{{ row.env.branch }}</code>
-                                <p>{{ row.env.server.name }}</p>
+                                <template v-if="row.env.latest_deployment">
+                                    <Link
+                                        :href="`/deployments/${row.env.latest_deployment.id}`"
+                                        class="deployment-result"
+                                    >
+                                        <HubStatus
+                                            :state="
+                                                row.env.latest_deployment.state
+                                            "
+                                        />
+                                        <code>{{
+                                            short(
+                                                row.env.latest_deployment
+                                                    .target_sha,
+                                            )
+                                        }}</code>
+                                    </Link>
+                                    <p>
+                                        {{
+                                            row.env.latest_deployment.user?.name
+                                        }}
+                                        ·
+                                        {{
+                                            date(
+                                                row.env.latest_deployment
+                                                    .finished_at ||
+                                                    row.env.latest_deployment
+                                                        .created_at,
+                                            )
+                                        }}
+                                    </p>
+                                    <small
+                                        v-if="
+                                            row.env.latest_deployment
+                                                .scheduled_for
+                                        "
+                                        class="muted"
+                                        >Scheduled
+                                        {{
+                                            date(
+                                                row.env.latest_deployment
+                                                    .scheduled_for,
+                                            )
+                                        }}</small
+                                    >
+                                </template>
+                                <span v-else class="muted"
+                                    >No deployments yet</span
+                                >
                             </td>
-                            <td><HubStatus :state="row.env.status" /></td>
-                            <td class="muted">
-                                {{ date(row.env.checked_at) }}
+                            <td>
+                                <strong
+                                    v-if="row.env.last_preflight?.count != null"
+                                    >{{ row.env.last_preflight.count }} commit{{
+                                        row.env.last_preflight.count === 1
+                                            ? ""
+                                            : "s"
+                                    }}</strong
+                                >
+                                <HubStatus
+                                    v-else
+                                    :state="row.env.status"
+                                    :label="inspectionLabel(row.env.status)"
+                                />
+                                <p class="muted">
+                                    Checked {{ date(row.env.checked_at) }}
+                                </p>
                             </td>
                             <td>
                                 <Link
                                     :href="`/environments/${row.env.id}`"
                                     class="link nowrap"
-                                    >Review →</Link
+                                    >Open project →</Link
                                 >
                             </td>
                         </tr>
@@ -256,6 +339,7 @@ const history = computed(() => props.deployments.data);
                             v-for="s in [
                                 'awaiting_confirmation',
                                 'awaiting_approval',
+                                'scheduled',
                                 'queued',
                                 'running',
                                 'succeeded',
@@ -324,7 +408,12 @@ const history = computed(() => props.deployments.data);
                                 <p>{{ date(d.created_at) }}</p>
                             </td>
                             <td>{{ d.user?.name }}</td>
-                            <td><HubStatus :state="d.state" /></td>
+                            <td>
+                                <HubStatus :state="d.state" />
+                                <p v-if="d.scheduled_for" class="muted">
+                                    Scheduled: {{ date(d.scheduled_for) }}
+                                </p>
+                            </td>
                             <td>
                                 <Link
                                     :href="`/deployments/${d.id}`"

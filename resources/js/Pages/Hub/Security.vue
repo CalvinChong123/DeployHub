@@ -14,6 +14,7 @@ const enable = useForm({ code: "" });
         title="Account security"
         subtitle="Protect your identity before managing hosts or running deployments."
         ><template #actions
+            ><Link href="/automation" class="btn">AI deployment access</Link
             ><Link href="/profile" class="btn"
                 >Edit profile & password</Link
             ></template

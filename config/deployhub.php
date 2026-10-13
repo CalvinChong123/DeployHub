@@ -2,6 +2,7 @@
 
 return [
     'candidate_minutes' => 60,
+    'preflight_reuse_seconds' => 120,
     'command_timeout' => 120,
     'deployment_timeout' => 900,
     'lock_seconds' => 1200,

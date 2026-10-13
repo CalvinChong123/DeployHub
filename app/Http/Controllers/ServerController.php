@@ -47,7 +47,7 @@ class ServerController extends Controller
             Audit::record($server->workspace_id, $request->user()->id, 'server.created', 'server:'.$server->id);
         });
 
-        return back()->with('message', 'Server registered. Discover and verify its fingerprint before testing authentication.');
+        return back()->with('message', 'Server registered. Discover and trust its fingerprint before testing authentication.');
     }
 
     public function rotate(Request $request, Server $server)
@@ -85,7 +85,11 @@ class ServerController extends Controller
     {
         $this->scoped($request, $server);
         $fingerprint = $connections->discover($server);
-        $request->session()->put('hostkey.'.$server->id, ['fingerprint' => $fingerprint, 'expires' => now()->addMinutes(10)->timestamp]);
+        $request->session()->put('hostkey.'.$server->id, [
+            'fingerprint' => $fingerprint,
+            'expires' => now()->addMinutes(10)->timestamp,
+            'server_identity' => $server->only(['host', 'port', 'username', 'credential_version', 'fingerprint']),
+        ]);
 
         return back()->with('fingerprint', ['server_id' => $server->id, 'value' => $fingerprint]);
     }
@@ -93,17 +97,31 @@ class ServerController extends Controller
     public function verify(Request $request, Server $server, ConnectionFactory $connections)
     {
         $this->scoped($request, $server);
-        $data = $request->validate(['fingerprint' => 'required|string|max:100', 'verified_out_of_band' => 'accepted']);
+        $data = $request->validate(['fingerprint' => 'required|string|max:100', 'trust_method' => 'sometimes|required|in:first_use,independent']);
+        $method = $data['trust_method'] ?? 'independent';
+        $request->validate([$method === 'first_use' ? 'trust_first_use' : 'verified_out_of_band' => 'accepted']);
         $challenge = $request->session()->get('hostkey.'.$server->id);
-        if (! $challenge || $challenge['expires'] < now()->timestamp || ! hash_equals($challenge['fingerprint'], $data['fingerprint']) || ! hash_equals($data['fingerprint'], $connections->discover($server))) {
-            throw new DeploymentException('Fingerprint discovery expired or host key changed. Discover it again.');
+        if (! $challenge || $challenge['expires'] < now()->timestamp || ($challenge['server_identity'] ?? null) !== $server->only(['host', 'port', 'username', 'credential_version', 'fingerprint']) || ! hash_equals($challenge['fingerprint'], $data['fingerprint'])) {
+            throw new DeploymentException('Fingerprint discovery expired or server configuration changed. Discover it again.');
         }
-        $server->update(['fingerprint' => $data['fingerprint'], 'status' => 'unknown', 'checked_at' => null]);
-        Environment::where('server_id', $server->id)->update(['status' => 'unknown', 'last_preflight' => null, 'checked_at' => null]);
+        if ($method === 'first_use' && $server->fingerprint) {
+            throw ValidationException::withMessages(['trust_method' => 'A fingerprint is already saved. Independently verify it before replacing it.']);
+        }
+        if (! hash_equals($data['fingerprint'], $connections->discover($server))) {
+            throw new DeploymentException('SSH host key changed after discovery. Discover it again before trusting it.');
+        }
+        DB::transaction(function () use ($request, $server, $data, $method, $challenge) {
+            $current = Server::whereKey($server->id)->lockForUpdate()->firstOrFail();
+            if ($challenge['expires'] < now()->timestamp || $challenge['server_identity'] !== $current->only(['host', 'port', 'username', 'credential_version', 'fingerprint'])) {
+                throw new DeploymentException('Server configuration or saved fingerprint changed. Discover it again.');
+            }
+            $current->update(['fingerprint' => $data['fingerprint'], 'status' => 'unknown', 'checked_at' => null, 'error' => null]);
+            Environment::where('server_id', $current->id)->update(['status' => 'unknown', 'last_preflight' => null, 'checked_at' => null]);
+            Audit::record($current->workspace_id, $request->user()->id, $method === 'first_use' ? 'server.hostkey_trusted_first_use' : 'server.hostkey_verified', 'server:'.$current->id, ['fingerprint' => $data['fingerprint'], 'trust_method' => $method, 'previous_fingerprint' => $challenge['server_identity']['fingerprint']]);
+        });
         $request->session()->forget('hostkey.'.$server->id);
-        Audit::record($server->workspace_id, $request->user()->id, 'server.hostkey_verified', 'server:'.$server->id, ['fingerprint' => $data['fingerprint']]);
 
-        return back()->with('message', 'Host fingerprint pinned. Test authentication next.');
+        return back()->with('message', $method === 'first_use' ? 'First-use host fingerprint trusted and saved. Test authentication next.' : 'Independently verified host fingerprint pinned. Test authentication next.');
     }
 
     public function test(Request $request, Server $server, ConnectionFactory $connections)
@@ -128,7 +146,7 @@ class ServerController extends Controller
     public function destroy(Request $request, Server $server)
     {
         $this->scoped($request, $server);
-        abort_if(Environment::where('server_id', $server->id)->exists(), 422, 'This server still has environments.');
+        abort_if(Environment::withTrashed()->where('server_id', $server->id)->exists(), 422, 'This server has retained project or deployment records.');
         DB::transaction(function () use ($request, $server) {
             Audit::record($server->workspace_id, $request->user()->id, 'server.deleted', 'server:'.$server->id);
             $server->delete();

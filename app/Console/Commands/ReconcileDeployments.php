@@ -14,8 +14,8 @@ class ReconcileDeployments extends Command
 
     public function handle(): int
     {
-        foreach (Deployment::whereIn('state', ['awaiting_confirmation', 'awaiting_approval', 'queued'])->where('expires_at', '<', now())->get() as $d) {
-            $changed = Deployment::whereKey($d->id)->whereIn('state', ['awaiting_confirmation', 'awaiting_approval', 'queued'])->update(['state' => 'expired', 'active_environment_id' => null, 'finished_at' => now()]);
+        foreach (Deployment::whereIn('state', ['awaiting_confirmation', 'awaiting_approval', 'scheduled', 'queued'])->where('expires_at', '<', now())->get() as $d) {
+            $changed = Deployment::whereKey($d->id)->whereIn('state', ['awaiting_confirmation', 'awaiting_approval', 'scheduled', 'queued'])->update(['state' => 'expired', 'active_environment_id' => null, 'finished_at' => now()]);
             if ($changed) {
                 Audit::record($d->environment->project->workspace_id, null, 'deployment.expired', 'deployment:'.$d->id);
             }

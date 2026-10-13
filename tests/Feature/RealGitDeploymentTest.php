@@ -2,11 +2,16 @@
 
 namespace Tests\Feature;
 
+use App\Services\Deployment\CommandBuilder;
+use App\Services\Deployment\CommandResult;
 use App\Services\Deployment\ConnectionFactory;
 use App\Services\Deployment\DeploymentException;
 use App\Services\Deployment\DeploymentExecutor;
+use App\Services\Deployment\DeploymentWorkflow;
+use App\Services\Deployment\RemoteConnection;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Str;
 use Symfony\Component\Process\Process;
 use Tests\Support\FakeConnections;
 use Tests\Support\HubFixture;
@@ -34,6 +39,8 @@ class RealGitDeploymentTest extends TestCase
         $this->git(['-C', $this->fixtureRoot.'/source', 'config', 'user.email', 'fixture@example.test']);
         $this->git(['-C', $this->fixtureRoot.'/source', 'config', 'user.name', 'Disposable fixture']);
         file_put_contents($this->fixtureRoot.'/source/app.txt', 'v1');
+        mkdir($this->fixtureRoot.'/source/public');
+        file_put_contents($this->fixtureRoot.'/source/public/.htaccess', 'Original handler');
         file_put_contents($this->fixtureRoot.'/source/.gitignore', "*.local\n");
         $this->commit('Initial fixture');
         $this->git(['-C', $this->fixtureRoot.'/source', 'remote', 'add', 'origin', $this->fixtureRoot.'/origin.git']);
@@ -95,16 +102,120 @@ class RealGitDeploymentTest extends TestCase
         $this->assertSame('v2', file_get_contents($this->fixtureRoot.'/target/app.txt'));
     }
 
-    public function test_real_dirty_tree_is_blocked_and_preserved(): void
+    public function test_commit_list_uses_the_captured_tip_when_tracking_ref_changes_during_inspection(): void
+    {
+        $earlier = $this->git(['-C', $this->fixtureRoot.'/source', 'rev-parse', 'HEAD']);
+        file_put_contents($this->fixtureRoot.'/source/app.txt', 'v3');
+        $this->commit('Additional fixture change');
+        $this->git(['-C', $this->fixtureRoot.'/source', 'push', 'origin', 'staging']);
+        $latest = $this->git(['-C', $this->fixtureRoot.'/source', 'rev-parse', 'HEAD']);
+        $path = LocalGitRemote::posix($this->fixtureRoot.'/target');
+        $builder = new CommandBuilder;
+        $changeRef = $builder->git($path, ['update-ref', 'refs/remotes/origin/staging', $earlier]);
+        $replacement = substr($builder->quote('_deployhub_target_exit=$?; '.$changeRef.'; printf'), 1, -1);
+        $remote = new class(new LocalGitRemote($path), $replacement) implements RemoteConnection
+        {
+            public function __construct(private LocalGitRemote $remote, private string $replacement) {}
+
+            public function run(string $command): CommandResult
+            {
+                // Simulate another process moving the tracking ref after this batch captures its target.
+                return $this->remote->run(str_replace('_deployhub_target_exit=$?; printf', $this->replacement, $command));
+            }
+        };
+        $this->app->instance(ConnectionFactory::class, new FakeConnections($remote));
+        $d = $this->candidate();
+        $this->assertSame($latest, $d->target_sha);
+        $this->assertSame(2, $d->preflight['count']);
+        $this->assertSame($latest, $d->preflight['commits'][0]['sha']);
+        $this->assertSame($earlier, $this->git(['-C', $this->fixtureRoot.'/target', 'rev-parse', 'refs/remotes/origin/staging']));
+    }
+
+    public function test_real_overlapping_changes_are_rejected_by_git_and_preserved(): void
     {
         file_put_contents($this->fixtureRoot.'/target/app.txt', 'local work');
-        try {
-            $this->candidate();
-            $this->fail('Dirty tree accepted.');
-        } catch (DeploymentException $e) {
-            $this->assertStringContainsString('dirty', $e->getMessage());
-        }
+        $d = $this->candidate();
+        $this->assertFalse($d->preflight['clean']);
+        $d->update(['state' => 'queued', 'active_environment_id' => $this->environment->id]);
+        app(DeploymentExecutor::class)->execute($d->id);
+        $this->assertSame('failed', $d->fresh()->state);
+        $this->assertFalse($d->fresh()->code_updated);
+        $this->assertSame($d->starting_sha, $this->git(['-C', $this->fixtureRoot.'/target', 'rev-parse', 'HEAD']));
         $this->assertSame('local work', file_get_contents($this->fixtureRoot.'/target/app.txt'));
+    }
+
+    public function test_real_nonoverlapping_cpanel_changes_and_untracked_logs_are_preserved(): void
+    {
+        file_put_contents($this->fixtureRoot.'/target/public/.htaccess', 'cPanel handler');
+        file_put_contents($this->fixtureRoot.'/target/public/error_log', 'untracked log');
+        $d = $this->candidate();
+        $d->update(['state' => 'queued', 'active_environment_id' => $this->environment->id]);
+        app(DeploymentExecutor::class)->execute($d->id);
+        $this->assertSame('succeeded', $d->fresh()->state);
+        $this->assertSame('v2', file_get_contents($this->fixtureRoot.'/target/app.txt'));
+        $this->assertSame('cPanel handler', file_get_contents($this->fixtureRoot.'/target/public/.htaccess'));
+        $this->assertSame('untracked log', file_get_contents($this->fixtureRoot.'/target/public/error_log'));
+    }
+
+    public function test_builtin_hard_reset_discards_tracked_changes_without_a_blanket_clean(): void
+    {
+        file_put_contents($this->fixtureRoot.'/target/app.txt', 'local work');
+        file_put_contents($this->fixtureRoot.'/target/public/error_log', 'retained log');
+        $hooks = DeploymentWorkflow::defaults();
+        $hooks[0]['enabled'] = true;
+        $this->environment->update(['hooks' => $hooks]);
+        $d = $this->candidate();
+        $d->update(['state' => 'queued', 'active_environment_id' => $this->environment->id]);
+        app(DeploymentExecutor::class)->execute($d->id);
+        $this->assertSame('succeeded', $d->fresh()->state);
+        $this->assertSame('v2', file_get_contents($this->fixtureRoot.'/target/app.txt'));
+        $this->assertSame('retained log', file_get_contents($this->fixtureRoot.'/target/public/error_log'));
+    }
+
+    public function test_reviewed_pre_hook_resets_tracked_changes_and_removes_only_named_untracked_log(): void
+    {
+        file_put_contents($this->fixtureRoot.'/target/app.txt', 'cPanel-style local change');
+        file_put_contents($this->fixtureRoot.'/target/error_log', 'untracked log');
+        file_put_contents($this->fixtureRoot.'/target/settings.local', 'retained configuration');
+        $this->environment->update(['hooks' => [['id' => (string) Str::uuid(), 'name' => 'Prepare checkout', 'phase' => 'pre',
+            'script' => "git reset --hard HEAD\nrm -f -- error_log\nprintf '%s' \"a'b; literal\" > hook.local", 'enabled' => true]]]);
+        $d = $this->candidate();
+        $this->assertFalse($d->preflight['clean']);
+        $this->assertStringContainsString('error_log', $d->preflight['changes']);
+        $this->assertSame('cPanel-style local change', file_get_contents($this->fixtureRoot.'/target/app.txt'));
+        $d->update(['state' => 'queued', 'active_environment_id' => $this->environment->id]);
+        app(DeploymentExecutor::class)->execute($d->id);
+        $this->assertSame('succeeded', $d->fresh()->state);
+        $this->assertSame('v2', file_get_contents($this->fixtureRoot.'/target/app.txt'));
+        $this->assertFileDoesNotExist($this->fixtureRoot.'/target/error_log');
+        $this->assertSame('retained configuration', file_get_contents($this->fixtureRoot.'/target/settings.local'));
+        $this->assertSame("a'b; literal", file_get_contents($this->fixtureRoot.'/target/hook.local'));
+    }
+
+    public function test_real_hook_stops_on_failed_command_before_later_lines_or_git_merge(): void
+    {
+        $this->environment->update(['hooks' => [['id' => (string) Str::uuid(), 'name' => 'Fail early', 'phase' => 'pre',
+            'script' => "false\nprintf executed > should-not-exist.local", 'enabled' => true]]]);
+        $d = $this->candidate();
+        $d->update(['state' => 'queued', 'active_environment_id' => $this->environment->id]);
+        app(DeploymentExecutor::class)->execute($d->id);
+        $this->assertSame('failed', $d->fresh()->state);
+        $this->assertFileDoesNotExist($this->fixtureRoot.'/target/should-not-exist.local');
+        $this->assertSame($d->starting_sha, $this->git(['-C', $this->fixtureRoot.'/target', 'rev-parse', 'HEAD']));
+    }
+
+    public function test_real_changed_untracked_contents_block_pre_hook_cleanup(): void
+    {
+        file_put_contents($this->fixtureRoot.'/target/error_log', 'first content');
+        $this->environment->update(['hooks' => [['id' => (string) Str::uuid(), 'name' => 'Remove log', 'phase' => 'pre',
+            'script' => 'rm -f -- error_log', 'enabled' => true]]]);
+        $d = $this->candidate();
+        file_put_contents($this->fixtureRoot.'/target/error_log', 'changed after review');
+        $d->update(['state' => 'queued', 'active_environment_id' => $this->environment->id]);
+        app(DeploymentExecutor::class)->execute($d->id);
+        $this->assertSame('failed', $d->fresh()->state);
+        $this->assertStringContainsString('Working tree changed', $d->fresh()->error);
+        $this->assertSame('changed after review', file_get_contents($this->fixtureRoot.'/target/error_log'));
     }
 
     public function test_incoming_commit_cannot_overwrite_an_ignored_local_config_file(): void

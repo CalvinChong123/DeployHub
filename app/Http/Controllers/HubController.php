@@ -8,6 +8,7 @@ use App\Models\Environment;
 use App\Models\Project;
 use App\Models\Server;
 use App\Services\Access;
+use App\Services\Deployment\DeploymentWorkflow;
 use App\Services\WorkerHealth;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
@@ -19,7 +20,7 @@ class HubController extends Controller
     public function index(Request $request, Access $access)
     {
         $workspace = $request->user()->workspace();
-        $projects = Project::where('workspace_id', $workspace->id)->with('environments.server')->orderBy('name')->get()->filter(fn ($p) => $access->project($request->user(), $p))->values();
+        $projects = Project::where('workspace_id', $workspace->id)->with(['environments.server', 'environments.latestDeployment.user:id,name'])->orderBy('name')->get()->filter(fn ($p) => $access->project($request->user(), $p))->values();
         foreach ($projects as $project) {
             $project->setRelation('environments', $project->environments->filter(fn ($e) => $access->environment($request->user(), $e))->values());
             foreach ($project->environments as $env) {
@@ -28,11 +29,17 @@ class HubController extends Controller
             }
         }
         $ids = $projects->flatMap(fn ($p) => $p->environments->pluck('id'));
-        $filters = $request->validate(['q' => 'nullable|string|max:100', 'state' => ['nullable', Rule::in(['all', 'awaiting_confirmation', 'awaiting_approval', 'queued', 'running', 'succeeded', 'failed', 'unknown', 'expired', 'rejected', 'cancelled', 'reconciled'])]]);
+        $historyIds = Environment::withTrashed()->whereHas('project', fn ($query) => $query->where('workspace_id', $workspace->id))
+            ->with(['project', 'server'])->get()->filter(fn ($env) => $access->environment($request->user(), $env))->pluck('id');
+        $filters = $request->validate(['q' => 'nullable|string|max:100', 'state' => ['nullable', Rule::in(['all', 'awaiting_confirmation', 'awaiting_approval', 'scheduled', 'queued', 'running', 'succeeded', 'failed', 'unknown', 'expired', 'rejected', 'cancelled', 'reconciled'])]]);
         $section = $request->route()->getName();
-        $deployments = Deployment::whereIn('environment_id', $ids)->with(['user:id,name', 'environment.project:id,name', 'environment.server:id,name']);
+        $deployments = Deployment::whereIn('environment_id', $historyIds)->with(['user:id,name', 'environment.project:id,name', 'environment.server:id,name']);
+        if ($section !== 'activity') {
+            $deployments->withoutExpiredCandidates();
+        }
         if ($section === 'approvals') {
-            $deployments->where('state', 'awaiting_approval')->where('expires_at', '>', now());
+            $deployments->where('state', 'awaiting_approval')->where('expires_at', '>', now())
+                ->where(fn ($query) => $query->whereNull('scheduled_for')->orWhere('scheduled_for', '>', now()));
         }
         if (in_array($section, ['activity', 'approvals'], true)) {
             if (($filters['state'] ?? 'all') !== 'all') {
@@ -52,13 +59,18 @@ class HubController extends Controller
         return Inertia::render('Hub/Index', ['section' => $section, 'projects' => $projects, 'filters' => ['q' => $filters['q'] ?? '', 'state' => $filters['state'] ?? 'all'],
             'deployments' => $deployments->latest()->orderByDesc('id')->paginate(50)->withQueryString(),
             'worker' => app(WorkerHealth::class)->status(),
-            'stats' => ['projects' => $projects->count(), 'environments' => $ids->count(), 'deployments' => Deployment::whereIn('environment_id', $ids)->where('created_at', '>=', now()->subDays(30))->count(), 'approvals' => Deployment::whereIn('environment_id', $ids)->where('state', 'awaiting_approval')->where('expires_at', '>', now())->count()]]);
+            'stats' => ['projects' => $projects->count(), 'environments' => $ids->count(), 'deployments' => Deployment::whereIn('environment_id', $ids)->where('created_at', '>=', now()->subDays(30))->count(),
+                'failed' => Deployment::whereIn('environment_id', $ids)->where('state', 'failed')->where('created_at', '>=', now()->subDays(30))->count(),
+                'scheduled' => Deployment::whereIn('environment_id', $ids)->where('state', 'scheduled')->where('expires_at', '>', now())->count(),
+                'approvals' => Deployment::whereIn('environment_id', $ids)->where('state', 'awaiting_approval')->where('expires_at', '>', now())
+                    ->where(fn ($query) => $query->whereNull('scheduled_for')->orWhere('scheduled_for', '>', now()))->count()]]);
     }
 
     public function environment(Request $request, Environment $environment, Access $access)
     {
         Gate::authorize('view', $environment);
-        $environment->load('project', 'server');
+        $environment->load(['project', 'server', 'latestDeployment.user:id,name', 'lastSuccessfulDeployment.user:id,name']);
+        $environment->setAttribute('hooks', DeploymentWorkflow::defaults($environment->pipeline, $environment->hooks ?? []));
         $canDeploy = $access->environment($request->user(), $environment, 'deploy');
         $manage = $access->admin($request->user(), $environment->project->workspace_id);
         $environment->setRelation('server', new Server($environment->server->only(['id', 'name', 'status', 'checked_at'])));
@@ -69,7 +81,8 @@ class HubController extends Controller
             'members' => $manage ? $request->user()->workspace()->users()->get(['users.id', 'users.name', 'users.email']) : [],
             'servers' => $servers->map(fn ($server) => $server->only(['id', 'name'])),
             'serverAccess' => $servers->mapWithKeys(fn ($server) => [$server->id => $server->users->pluck('id')]),
-            'permissions' => $manage ? $environment->permissions()->get() : [], 'deployments' => $environment->deployments()->with('user:id,name')->latest()->orderByDesc('id')->paginate(20)->withQueryString()]);
+            'permissions' => $manage ? $environment->permissions()->get() : [],
+            'deployments' => $environment->deployments()->withoutExpiredCandidates()->with('user:id,name')->latest()->orderByDesc('id')->paginate(20)->withQueryString()]);
     }
 
     public function audit(Request $request)

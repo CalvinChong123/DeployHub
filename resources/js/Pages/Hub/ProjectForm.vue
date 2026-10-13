@@ -3,8 +3,27 @@ import { Head, Link, useForm } from "@inertiajs/vue3";
 import HubLayout from "@/Layouts/HubLayout.vue";
 import EnvironmentFields from "@/Components/EnvironmentFields.vue";
 import HubErrors from "@/Components/HubErrors.vue";
-import type { Server } from "@/hub-types";
-defineProps<{ servers: Server[] }>();
+import type { Server, DeploymentHook } from "@/hub-types";
+type ProjectInput = {
+    copy_of?: number;
+    name: string;
+    repository: string;
+    description: string;
+    environment_name: string;
+    server_id: string | number;
+    path: string;
+    branch: string;
+    production: boolean;
+    requires_approval: boolean;
+    pipeline: string[];
+    hooks: DeploymentHook[];
+    health_url: string;
+};
+const props = defineProps<{
+    servers: Server[];
+    initial?: ProjectInput | null;
+    defaultHooks?: DeploymentHook[];
+}>();
 const form = useForm({
     name: "",
     repository: "",
@@ -15,18 +34,30 @@ const form = useForm({
     branch: "staging",
     production: false,
     requires_approval: false,
-    pipeline: ["cache_clear"] as string[],
+    pipeline: [] as string[],
+    hooks: props.defaultHooks || ([] as DeploymentHook[]),
     health_url: "",
+    ...props.initial,
 });
 </script>
 <template>
-    <Head title="Add project" /><HubLayout
-        title="Add project"
-        subtitle="Map an existing Git repository to a verified SSH target."
+    <Head :title="initial ? 'Copy project' : 'Add project'" /><HubLayout
+        :title="initial ? 'Copy project' : 'Add project'"
+        :subtitle="
+            initial
+                ? 'Adjust the copied configuration and save an independent deployment project.'
+                : 'Map an existing Git repository to a verified SSH target.'
+        "
         ><section class="card">
-            <div class="card-heading"><h2>Project & first environment</h2></div>
+            <div class="card-heading"><h2>Project & deployment target</h2></div>
             <form class="card-content" @submit.prevent="form.post('/projects')">
                 <HubErrors :errors="form.errors" />
+                <p v-if="initial" class="notice">
+                    Repository, branch, server and workflow are copied. Choose a
+                    different remote directory or server. The new project has
+                    its own access and history; saving does not clone files on
+                    the server.
+                </p>
                 <div class="form-grid" style="margin-bottom: 24px">
                     <div class="field">
                         <label for="name">Project name</label
@@ -65,7 +96,11 @@ const form = useForm({
                         class="btn primary"
                         :disabled="form.processing || !servers.length"
                     >
-                        Register project
+                        {{
+                            initial
+                                ? "Create copied project"
+                                : "Register project"
+                        }}
                     </button>
                 </div>
                 <p v-if="!servers.length" class="muted">

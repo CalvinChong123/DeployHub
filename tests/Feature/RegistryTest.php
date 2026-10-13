@@ -6,6 +6,7 @@ use App\Models\Environment;
 use App\Models\Server;
 use App\Services\Access;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Inertia\Testing\AssertableInertia;
 use Tests\Support\HubFixture;
 use Tests\TestCase;
 
@@ -56,25 +57,27 @@ class RegistryTest extends TestCase
         $this->assertSame('awaiting_confirmation', $d->fresh()->state);
     }
 
-    public function test_deploy_history_prevents_project_deletion_and_registry_is_admin_only(): void
+    public function test_deletion_retains_history_and_registry_is_admin_only(): void
     {
         $d = $this->candidate();
-        $this->actingAs($this->owner)->delete('/projects/'.$this->environment->project_id)->assertStatus(422);
         $this->actingAs($this->member())->put('/projects/'.$this->environment->project_id, ['name' => 'Changed'])->assertForbidden();
+        $this->actingAs($this->owner)->delete('/projects/'.$this->environment->project_id)->assertRedirect('/projects');
+        $this->assertSoftDeleted('projects', ['id' => $this->environment->project_id]);
+        $this->assertSoftDeleted('environments', ['id' => $this->environment->id]);
         $this->assertDatabaseHas('deployments', ['id' => $d->id]);
+        $this->assertSame('expired', $d->fresh()->state);
+        $this->get('/deployments/'.$d->id)->assertOk();
+        $this->get('/activity')->assertInertia(fn (AssertableInertia $page) => $page->has('deployments.data', 1)->where('deployments.data.0.id', $d->id));
+        $this->post('/deployments/'.$d->id.'/confirm', ['digest' => $d->digest, 'reviewed' => true])->assertForbidden();
     }
 
-    public function test_duplicate_names_are_validation_errors_for_create_and_rename(): void
+    public function test_each_project_is_independent_and_can_use_the_same_environment_label(): void
     {
         $data = [...$this->data(), 'environment_name' => $this->environment->name];
-        $this->actingAs($this->owner)->post('/projects/'.$this->environment->project_id.'/environments', $data)->assertSessionHasErrors('environment_name');
-        $data['environment_name'] = 'Production';
-        $this->post('/projects/'.$this->environment->project_id.'/environments', $data)->assertSessionHasNoErrors();
-        $production = Environment::where('name', 'Production')->firstOrFail();
-        $this->put('/environments/'.$production->id, [...$data, 'environment_name' => 'Staging'])->assertSessionHasErrors('environment_name');
-        $this->assertSame('Production', $production->fresh()->name);
-        $this->put('/environments/'.$production->id, $data)->assertSessionHasNoErrors();
+        $this->actingAs($this->owner)->post('/projects/'.$this->environment->project_id.'/environments', $data)->assertNotFound();
+        $this->post('/projects', $data)->assertSessionHasNoErrors();
         $this->assertDatabaseCount('environments', 2);
+        $this->assertDatabaseCount('projects', 2);
         $this->post('/projects', [...$data, 'path' => '/home/deploy/another-project'])->assertSessionHasNoErrors();
     }
 

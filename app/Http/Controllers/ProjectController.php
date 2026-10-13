@@ -9,30 +9,81 @@ use App\Models\Project;
 use App\Models\Server;
 use App\Services\Audit;
 use App\Services\Deployment\CommandBuilder;
+use App\Services\Deployment\DeploymentWorkflow;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 
 class ProjectController extends Controller
 {
     public function create(Request $request)
     {
-        return Inertia::render('Hub/ProjectForm', ['servers' => Server::where('workspace_id', $request->user()->workspace()->id)->orderBy('name')->get(['id', 'name', 'fingerprint'])]);
+        return Inertia::render('Hub/ProjectForm', ['servers' => Server::where('workspace_id', $request->user()->workspace()->id)->orderBy('name')->get(['id', 'name', 'fingerprint']), 'initial' => null, 'defaultHooks' => DeploymentWorkflow::defaults(['cache_clear'])]);
+    }
+
+    public function copy(Request $request, Environment $environment)
+    {
+        Gate::authorize('manage', $environment);
+        $hooks = DeploymentWorkflow::defaults($environment->pipeline, $environment->hooks ?? []);
+        foreach ($hooks as &$hook) {
+            $hook['id'] = (string) Str::uuid();
+        }
+
+        return Inertia::render('Hub/ProjectForm', [
+            'servers' => Server::where('workspace_id', $request->user()->workspace()->id)->orderBy('name')->get(['id', 'name', 'fingerprint']),
+            'defaultHooks' => [], 'initial' => ['copy_of' => $environment->id, 'name' => mb_substr($environment->project->name.' — Copy', 0, 100),
+                'repository' => $environment->project->repository, 'description' => $environment->project->description ?? '',
+                'environment_name' => $environment->name, 'server_id' => $environment->server_id, 'path' => '', 'branch' => $environment->branch,
+                'production' => $environment->production, 'requires_approval' => $environment->requires_approval, 'pipeline' => [],
+                'hooks' => $hooks, 'health_url' => $environment->health_url ?? ''],
+        ]);
     }
 
     private function configuration(Request $request, CommandBuilder $commands, ?int $projectId = null): array
     {
         $request->validate([
             'environment_name' => [Rule::unique('environments', 'name')->where('project_id', $projectId)->ignore($request->route('environment')?->id)],
-            'path' => [Rule::unique('environments', 'path')->where('server_id', $request->input('server_id'))->ignore($request->route('environment')?->id)],
+            'path' => [Rule::unique('environments', 'path')->where('server_id', $request->input('server_id'))->whereNull('deleted_at')->ignore($request->route('environment')?->id)],
         ]);
         $data = $request->validate(['environment_name' => 'required|string|max:50', 'server_id' => 'required|integer', 'path' => 'required|string|max:255', 'branch' => 'required|string|max:200', 'production' => 'required|boolean', 'requires_approval' => 'required|boolean', 'pipeline' => 'present|array|max:5', 'pipeline.*' => 'required|string|distinct|in:'.implode(',', CommandBuilder::STEPS), 'health_url' => 'nullable|string|max:255']);
         abort_unless(Server::whereKey($data['server_id'])->where('workspace_id', $request->user()->workspace()->id)->exists(), 422, 'Select a server from this workspace.');
+        $hookData = $request->validate([
+            'hooks' => 'sometimes|array|max:26',
+            'hooks.*' => 'required|array:id,name,phase,script,enabled,type',
+            'hooks.*.type' => 'sometimes|in:custom,'.implode(',', array_keys(DeploymentWorkflow::OPTIONS)),
+            'hooks.*.id' => 'required|uuid|distinct',
+            'hooks.*.name' => 'required|string|max:80',
+            'hooks.*.phase' => 'required|in:pre,post',
+            'hooks.*.script' => ['required', 'string', 'max:10000', 'not_regex:/\x00/'],
+            'hooks.*.enabled' => 'required|boolean',
+        ]);
+        if (array_key_exists('hooks', $hookData)) {
+            $data['hooks'] = array_values(array_map(fn ($hook) => [...$hook, 'script' => str_replace(["\r\n", "\r"], "\n", $hook['script']), 'enabled' => (bool) $hook['enabled']], $hookData['hooks']));
+            $types = [];
+            foreach ($data['hooks'] as &$hook) {
+                if (isset(DeploymentWorkflow::OPTIONS[$hook['type'] ?? ''])) {
+                    if (in_array($hook['type'], $types, true)) {
+                        throw ValidationException::withMessages(['hooks' => 'Each default option can be added once.']);
+                    }
+                    $types[] = $hook['type'];
+                    $option = DeploymentWorkflow::OPTIONS[$hook['type']];
+                    $hook['name'] = $option['name'];
+                    $hook['script'] = $option['script'];
+                    if ($hook['type'] === 'health') {
+                        $hook['phase'] = 'post';
+                    }
+                }
+            }
+            unset($hook);
+        }
         $commands->validatePath($data['path']);
         $commands->validateBranch($data['branch']);
-        if (in_array('health', $data['pipeline'], true)) {
+        if (in_array('health', $data['pipeline'], true) || collect($data['hooks'] ?? [])->contains(fn ($hook) => ($hook['type'] ?? '') === 'health' && $hook['enabled'])) {
             $commands->healthUrl($data['health_url'] ?? null);
         }
         $data['pipeline'] = array_values(array_intersect(CommandBuilder::STEPS, $data['pipeline']));
@@ -54,32 +105,22 @@ class ProjectController extends Controller
     {
         $projectData = $request->validate(['name' => 'required|string|max:100', 'repository' => ['required', 'string', 'max:255', 'regex:~^(?:git@[A-Za-z0-9.-]+:[A-Za-z0-9_./-]+|https://[A-Za-z0-9.-]+/[A-Za-z0-9_./-]+|ssh://[A-Za-z0-9_.-]+@[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9_./-]+)$~D'], 'description' => 'nullable|string|max:1000']);
         $envData = $this->configuration($request, $commands);
-        $env = DB::transaction(function () use ($request, $projectData, $envData) {
+        $copy = null;
+        if ($request->filled('copy_of')) {
+            $request->validate(['copy_of' => 'integer']);
+            $copy = Environment::findOrFail($request->integer('copy_of'));
+            Gate::authorize('manage', $copy);
+        }
+        $env = DB::transaction(function () use ($request, $projectData, $envData, $copy) {
             $project = Project::create([...$projectData, 'workspace_id' => $request->user()->workspace()->id]);
             $env = $project->environments()->create($envData);
             $this->ownGrant($env, $request->user()->id);
-            Audit::record($project->workspace_id, $request->user()->id, 'project.created', 'project:'.$project->id);
+            Audit::record($project->workspace_id, $request->user()->id, $copy ? 'project.copied' : 'project.created', 'project:'.$project->id, $copy ? ['source_environment_id' => $copy->id] : []);
 
             return $env;
         });
 
         return to_route('environments.show', $env)->with('message', 'Project registered. Run preflight to inspect the target.');
-    }
-
-    public function addEnvironment(Request $request, Project $project, CommandBuilder $commands)
-    {
-        abort_unless($project->workspace_id === $request->user()->workspace()->id, 404);
-        $env = DB::transaction(function () use ($project, $request, $commands) {
-            Project::whereKey($project->id)->lockForUpdate()->firstOrFail();
-            $data = $this->configuration($request, $commands, $project->id);
-            $env = $project->environments()->create($data);
-            $this->ownGrant($env, $request->user()->id);
-            Audit::record($project->workspace_id, $request->user()->id, 'environment.created', 'environment:'.$env->id);
-
-            return $env;
-        });
-
-        return to_route('environments.show', $env);
     }
 
     public function updateProject(Request $request, Project $project)
@@ -98,14 +139,28 @@ class ProjectController extends Controller
     public function destroy(Request $request, Project $project)
     {
         abort_unless($project->workspace_id === $request->user()->workspace()->id, 404);
-        abort_if(Deployment::whereIn('environment_id', $project->environments()->select('id'))->exists(), 422, 'Projects with deployment history are retained for audit.');
-        DB::transaction(function () use ($request, $project) {
-            $project->environments()->delete();
-            Audit::record($project->workspace_id, $request->user()->id, 'project.deleted', 'project:'.$project->id);
-            $project->delete();
-        });
+        $environment = $project->environments()->sole();
+        $lock = Cache::lock('environment:'.$environment->id, config('deployhub.lock_seconds'));
+        if (! $lock->get()) {
+            throw ValidationException::withMessages(['project' => 'A repository operation is running. Try again after it finishes.']);
+        }
+        try {
+            DB::transaction(function () use ($request, $project, $environment) {
+                Project::whereKey($project->id)->lockForUpdate()->firstOrFail();
+                $environment = Environment::whereKey($environment->id)->lockForUpdate()->firstOrFail();
+                if (Deployment::where('active_environment_id', $environment->id)->exists()) {
+                    throw ValidationException::withMessages(['project' => 'Finish or cancel the active deployment, or reconcile unknown state, before deleting this project.']);
+                }
+                $environment->deployments()->whereIn('state', ['awaiting_confirmation', 'awaiting_approval', 'scheduled'])->update(['state' => 'expired', 'error' => 'Project registration was deleted.']);
+                $environment->delete();
+                $project->delete();
+                Audit::record($project->workspace_id, $request->user()->id, 'project.deleted', 'project:'.$project->id, ['environment_id' => $environment->id, 'history_retained' => true]);
+            });
+        } finally {
+            $lock->release();
+        }
 
-        return to_route('projects.index')->with('message', 'Unused project removed.');
+        return to_route('projects.index')->with('message', 'Project removed. Deployment history retained; remote files were not changed.');
     }
 
     public function update(Request $request, Environment $environment, CommandBuilder $commands)

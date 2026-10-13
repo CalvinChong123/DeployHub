@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
-import { Head, Link, useForm, router } from "@inertiajs/vue3";
+import { Head, Link, useForm } from "@inertiajs/vue3";
 import HubLayout from "@/Layouts/HubLayout.vue";
 import HubStatus from "@/Components/HubStatus.vue";
 import HubErrors from "@/Components/HubErrors.vue";
@@ -15,6 +15,7 @@ import {
     type Permission,
     type Server,
     type Paginated,
+    inspectionLabel,
 } from "@/hub-types";
 const props = defineProps<{
     environment: Environment;
@@ -38,10 +39,10 @@ const projectForm = useForm({
 function removeProject() {
     if (
         window.confirm(
-            "Delete this unused project and its environments? Projects with deployment history are retained.",
+            `Delete ${env.project?.name} (${env.name}) from DeployHub? Deployment history is retained. Other projects and remote files are unaffected.`,
         )
     )
-        router.delete(`/projects/${env.project_id}`);
+        projectForm.delete(`/projects/${env.project_id}`);
 }
 const configuration = useForm({
     environment_name: env.name,
@@ -50,7 +51,8 @@ const configuration = useForm({
     branch: env.branch,
     production: env.production,
     requires_approval: env.requires_approval,
-    pipeline: [...env.pipeline],
+    pipeline: [] as string[],
+    hooks: (env.hooks || []).map((hook) => ({ ...hook })),
     health_url: env.health_url || "",
     transfer_server_access: false,
 });
@@ -72,16 +74,6 @@ watch(
         configuration.transfer_server_access = false;
     },
 );
-const additional = useForm({
-    environment_name: "Production",
-    server_id: env.server_id,
-    path: "",
-    branch: "main",
-    production: true,
-    requires_approval: true,
-    pipeline: ["cache_clear"] as string[],
-    health_url: "",
-});
 const grant = useForm({
     user_id: "",
     can_view: true,
@@ -112,7 +104,9 @@ function selectMember() {
                 "
             >
                 {{
-                    preflight.processing ? "Inspecting…" : "Refresh preflight"
+                    preflight.processing
+                        ? "Checking repository…"
+                        : "Check repository"
                 }}</button
             ><button
                 v-if="canDeploy"
@@ -125,11 +119,102 @@ function selectMember() {
                 "
             >
                 {{
-                    candidate.processing ? "Preparing…" : "Review deployment →"
+                    candidate.processing ? "Preparing…" : "Prepare deployment →"
                 }}
             </button></template
         ><HubErrors :errors="candidate.errors" />
-        <section class="card">
+        <section class="card project-summary">
+            <div class="summary-grid">
+                <div>
+                    <span class="meta-label">Branch & target</span>
+                    <strong>{{ environment.branch }}</strong>
+                    <p>
+                        {{ environment.name }} · {{ environment.server.name }}
+                    </p>
+                    <small v-if="environment.production" class="muted"
+                        >Production · independent approval</small
+                    >
+                </div>
+                <div>
+                    <span class="meta-label">Last successful deployment</span>
+                    <template v-if="environment.last_successful_deployment">
+                        <Link
+                            :href="`/deployments/${environment.last_successful_deployment.id}`"
+                            class="link"
+                            ><code>{{
+                                short(
+                                    environment.last_successful_deployment
+                                        .target_sha,
+                                )
+                            }}</code>
+                            →</Link
+                        >
+                        <p>
+                            {{
+                                date(
+                                    environment.last_successful_deployment
+                                        .finished_at,
+                                )
+                            }}
+                        </p>
+                        <small class="muted">{{
+                            environment.last_successful_deployment.user?.name
+                        }}</small>
+                    </template>
+                    <p v-else class="muted">No successful deployment yet</p>
+                </div>
+                <div>
+                    <span class="meta-label">Incoming · last check</span>
+                    <strong v-if="environment.last_preflight?.count != null"
+                        >{{ environment.last_preflight.count }} commit{{
+                            environment.last_preflight.count === 1 ? "" : "s"
+                        }}</strong
+                    >
+                    <strong v-else>Not checked</strong>
+                    <p class="muted">{{ date(environment.checked_at) }}</p>
+                </div>
+            </div>
+            <div v-if="environment.latest_deployment" class="latest-result">
+                <div class="deployment-result">
+                    <span class="muted">Latest deployment</span
+                    ><HubStatus
+                        :state="environment.latest_deployment.state"
+                    /><code>{{
+                        short(environment.latest_deployment.target_sha)
+                    }}</code>
+                </div>
+                <Link
+                    :href="`/deployments/${environment.latest_deployment.id}`"
+                    class="link"
+                    >View deployment →</Link
+                >
+            </div>
+            <p
+                v-if="environment.latest_deployment?.scheduled_for"
+                class="summary-note muted"
+            >
+                Scheduled for
+                {{ date(environment.latest_deployment.scheduled_for) }}
+            </p>
+        </section>
+        <div
+            v-if="
+                environment.latest_deployment?.state === 'failed' &&
+                environment.latest_deployment.code_updated
+            "
+            class="notice warning"
+        >
+            The latest deployment changed code before failing. Review its
+            completed steps and check the application before deploying again.
+        </div>
+        <details class="card repository-details">
+            <summary>
+                Repository details
+                <HubStatus
+                    :state="environment.status"
+                    :label="inspectionLabel(environment.status)"
+                />
+            </summary>
             <div class="meta-grid">
                 <div>
                     <span class="meta-label">Environment</span
@@ -145,15 +230,19 @@ function selectMember() {
                     ><code>{{ environment.branch }}</code>
                 </div>
                 <div>
-                    <span class="meta-label">Readiness</span
-                    ><HubStatus :state="environment.status" />
+                    <span class="meta-label">Repository check</span
+                    ><HubStatus
+                        :state="environment.status"
+                        :label="inspectionLabel(environment.status)"
+                    />
                 </div>
                 <div>
                     <span class="meta-label">Remote directory</span
                     ><code>{{ environment.path }}</code>
                 </div>
                 <div>
-                    <span class="meta-label">Current HEAD / fetched origin</span
+                    <span class="meta-label"
+                        >Last inspected HEAD / fetched origin</span
                     ><code
                         >{{ short(environment.last_preflight?.head) }} →
                         {{ short(environment.last_preflight?.target) }}</code
@@ -166,19 +255,19 @@ function selectMember() {
                     }}</span>
                 </div>
             </div>
-        </section>
+            <div class="card-content detail-actions" v-if="canManage">
+                <Link :href="`/environments/${environment.id}/copy`" class="btn"
+                    >Copy project</Link
+                >
+            </div>
+        </details>
         <div class="tabs">
             <button
                 v-for="name in [
                     'overview',
                     'deployments',
                     ...(canManage
-                        ? [
-                              'pipeline & settings',
-                              'access',
-                              'project settings',
-                              'add environment',
-                          ]
+                        ? ['pipeline & settings', 'access', 'project settings']
                         : []),
                 ]"
                 :key="name"
@@ -196,17 +285,49 @@ function selectMember() {
             >
                 {{ environment.last_preflight.error }}
             </div>
-            <div
+            <details
                 v-else-if="environment.last_preflight?.head"
-                class="notice success"
+                class="inspection-note"
             >
-                Clean working tree · Matching branch · Fast-forward history ·
-                Fetch completed
-                {{ date(environment.last_preflight.fetched_at) }}
-            </div>
+                <summary>
+                    {{
+                        environment.last_preflight.clean === false
+                            ? "Local working tree changes"
+                            : "Repository check passed"
+                    }}
+                    · Matching branch · Fast-forward history · Fetch completed
+                    {{ date(environment.last_preflight.fetched_at) }}
+                    <small
+                        v-if="environment.last_preflight.duration_ms != null"
+                    >
+                        ·
+                        {{
+                            (
+                                environment.last_preflight.duration_ms / 1000
+                            ).toFixed(1)
+                        }}s
+                    </small>
+                </summary>
+                <p class="muted">
+                    Review reuses a successful inspection for up to two minutes
+                    while configuration is unchanged. Deployment rechecks the
+                    repository before running any steps.
+                </p>
+                <template v-if="environment.last_preflight.clean === false"
+                    ><p>
+                        These changes do not block review. Git keeps unrelated
+                        local changes and stops if the update would overwrite
+                        them. Enable the Pre deploy Hard reset option if you
+                        want tracked changes discarded.
+                    </p>
+                    <pre class="mono">{{
+                        environment.last_preflight.changes
+                    }}</pre>
+                </template>
+            </details>
             <div v-else class="notice warning">
-                Repository state is unknown. Refresh preflight before reviewing
-                a deployment.
+                No repository check yet. Prepare deployment will check the
+                repository before you confirm.
             </div>
             <section class="card">
                 <div class="card-heading">
@@ -295,7 +416,12 @@ function selectMember() {
                                 <code>{{ short(d.target_sha) }}</code>
                             </td>
                             <td>{{ d.user?.name }}</td>
-                            <td><HubStatus :state="d.state" /></td>
+                            <td>
+                                <HubStatus :state="d.state" />
+                                <p v-if="d.scheduled_for" class="muted">
+                                    Scheduled: {{ date(d.scheduled_for) }}
+                                </p>
+                            </td>
                             <td>{{ date(d.created_at) }}</td>
                         </tr>
                     </tbody>
@@ -502,40 +628,15 @@ function selectMember() {
                     <button
                         type="button"
                         class="btn danger"
+                        :disabled="projectForm.processing"
                         @click="removeProject"
                     >
-                        Delete unused project</button
+                        Delete project</button
                     ><button
                         class="btn primary"
                         :disabled="projectForm.processing"
                     >
                         Save project
-                    </button>
-                </div>
-            </form>
-        </section>
-        <section v-if="tab === 'add environment'" class="card">
-            <div class="card-heading">
-                <h2>Add a separate deployment target</h2>
-            </div>
-            <form
-                class="card-content"
-                @submit.prevent="
-                    additional.post(
-                        `/projects/${environment.project_id}/environments`,
-                    )
-                "
-            >
-                <HubErrors :errors="additional.errors" /><EnvironmentFields
-                    :form="additional"
-                    :servers="servers"
-                />
-                <div class="form-actions">
-                    <button
-                        class="btn primary"
-                        :disabled="additional.processing"
-                    >
-                        Add environment
                     </button>
                 </div>
             </form>

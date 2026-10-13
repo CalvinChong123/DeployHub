@@ -106,10 +106,10 @@ class PipelineRecoveryTest extends TestCase
         $this->assertDatabaseCount('deployments', 1);
     }
 
-    public function test_recovery_blocks_changed_origin_or_head_and_dirty_tree(): void
+    public function test_recovery_blocks_changed_origin_or_head(): void
     {
         $source = $this->failedDeployment();
-        foreach (['target' => str_repeat('c', 40), 'head' => str_repeat('d', 40), 'dirty' => true] as $property => $value) {
+        foreach (['target' => str_repeat('c', 40), 'head' => str_repeat('d', 40)] as $property => $value) {
             $original = $this->remote->$property;
             $this->remote->$property = $value;
             $this->actingAs($this->owner)->post('/deployments/'.$source->id.'/recover', ['idempotency_key' => (string) Str::uuid()])->assertSessionHas('error');

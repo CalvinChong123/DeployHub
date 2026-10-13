@@ -172,17 +172,18 @@ class DeployHubExecutionTest extends TestCase
         $this->assertFalse($d->fresh()->code_updated);
     }
 
-    public function test_dirty_worktree_blocks_without_reset_or_cleanup(): void
+    public function test_unrelated_dirty_worktree_is_preserved_without_reset_or_cleanup(): void
     {
         $d = $this->candidate();
         $this->queue($d);
         $this->remote->dirty = true;
         app(DeploymentExecutor::class)->execute($d->id);
-        $this->assertSame('failed', $d->fresh()->state);
+        $this->assertSame('succeeded', $d->fresh()->state);
+        $this->assertTrue($this->remote->dirty);
         $commands = implode('\n', $this->remote->commands);
         $this->assertStringNotContainsString("'reset'", $commands);
         $this->assertStringNotContainsString("'clean'", $commands);
-        $this->assertStringNotContainsString("'merge'", $commands);
+        $this->assertStringContainsString("'merge'", $commands);
     }
 
     public function test_detached_branch_mismatch_divergence_and_wrong_origin_block_preview(): void

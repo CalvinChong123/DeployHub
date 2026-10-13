@@ -38,17 +38,31 @@ class DeploymentExecutor
             $remote = new HeartbeatConnection($this->connections->connect($env->server), $deployment->id, $executionToken);
             $credential = $env->server->credential;
             $this->knownSecrets = $credential ? [$credential->private_key, $credential->passphrase] : [];
-            $state = $this->inspector->inspect($remote, $env);
+            $hooks = $deployment->candidate['hooks'] ?? [];
+            $preHooks = array_values(array_filter($hooks, fn ($hook) => $hook['phase'] === 'pre'));
+            $postHooks = array_values(array_filter($hooks, fn ($hook) => $hook['phase'] === 'post'));
+            $state = $this->inspector->inspect($remote, $env, count($preHooks) > 0, includeCommits: false);
             if ($state['head'] !== $deployment->starting_sha || $state['target'] !== $deployment->target_sha) {
                 throw new DeploymentException('Repository state changed after review. Create a fresh deployment preview.');
             }
-            $this->finish($step, new CommandResult('Clean tree, matching branch, origin and exact candidate verified.', 0));
+            if ($preHooks && ($state['worktree_digest'] ?? null) !== ($deployment->candidate['worktree_digest'] ?? null)) {
+                throw new DeploymentException('Working tree changed after hook review. Create a fresh deployment preview.');
+            }
+            $this->finish($step, new CommandResult('Matching branch, origin, reviewed working tree and exact candidate verified.', 0));
             $step = null;
             $recovery = isset($deployment->candidate['recovery_of']);
             if ($recovery) {
                 $deployment->update(['code_updated' => true]);
             }
-            $steps = [...($recovery ? [] : ['fast_forward']), ...$deployment->candidate['pipeline'], 'verify_head'];
+            $hookSteps = [];
+            foreach ($hooks as $hook) {
+                $hookSteps[$hook['phase'].'_hook:'.$hook['id']] = $hook;
+            }
+            $preSteps = array_map(fn ($hook) => 'pre_hook:'.$hook['id'], $preHooks);
+            $postSteps = array_map(fn ($hook) => 'post_hook:'.$hook['id'], $postHooks);
+            $pipeline = $deployment->candidate['pipeline'];
+            $steps = [...$preSteps, ...($preHooks ? ['repository_ready'] : []), ...($recovery ? [] : ['fast_forward']),
+                ...array_values(array_diff($pipeline, ['health'])), ...$postSteps, ...(in_array('health', $pipeline, true) ? ['health'] : []), 'verify_head'];
             foreach ($steps as $type) {
                 $deployment->refresh();
                 if ($deployment->state !== 'running' || $deployment->execution_token !== $executionToken) {
@@ -63,18 +77,33 @@ class DeploymentExecutor
                 $this->candidates->validate($deployment);
                 $this->candidates->validateApproval($deployment);
                 $step = $this->start($deployment, $type);
+                if ($type === 'repository_ready') {
+                    $state = $this->inspector->verifyAfterHooks($remote, $env);
+                    if ($state['head'] !== $deployment->starting_sha || $state['target'] !== $deployment->target_sha) {
+                        throw new ConnectionLost('Pre hooks changed the reviewed commit. Inspect the repository and create a fresh preview after reconciliation.');
+                    }
+                    $this->finish($step, new CommandResult('Pre hooks completed. Branch, origin and unchanged reviewed base/target verified. Git will reject updates that overwrite local changes.', 0));
+                    $step = null;
+
+                    continue;
+                }
                 $command = match ($type) {
                     'fast_forward' => $this->commands->git($env->path, ['merge', '--ff-only', '--no-edit', '--no-stat', '--no-overwrite-ignore', $this->commands->sha($deployment->target_sha)]),
                     'verify_head' => $this->commands->git($env->path, ['rev-parse', '--verify', 'HEAD^{commit}']),
-                    default => $this->commands->step($env->path, $type, $deployment->candidate['health_url']),
+                    default => isset($hookSteps[$type])
+                        ? (isset(DeploymentWorkflow::OPTIONS[$hookSteps[$type]['type'] ?? ''])
+                            ? $this->commands->step($env->path, $hookSteps[$type]['type'], $deployment->candidate['health_url'])
+                            : $this->commands->hook($env->path, $hookSteps[$type]['script']))
+                        : $this->commands->step($env->path, $type, $deployment->candidate['health_url']),
                 };
                 $result = $remote->run($command);
-                if ($type === 'health' && $result->exitCode === 0 && ! preg_match('/^2[0-9]{2}$/D', trim($result->output))) {
+                if (($type === 'health' || ($hookSteps[$type]['type'] ?? null) === 'health') && $result->exitCode === 0 && ! preg_match('/^2[0-9]{2}$/D', trim($result->output))) {
                     $result = new CommandResult('Health check did not return a 2xx HTTP status. Redirects and malformed responses are failures.', 1);
                 }
                 $this->finish($step, $result);
                 if ($result->exitCode !== 0) {
-                    throw new DeploymentException('Mandatory step '.$type.' failed (exit '.$result->exitCode.'). Review the sanitized step log.');
+                    $name = $hookSteps[$type]['name'] ?? $type;
+                    throw new DeploymentException('Step '.$name.' failed (exit '.$result->exitCode.'). Review its step log.');
                 }
                 if ($type === 'fast_forward') {
                     $deployment->update(['code_updated' => true]);

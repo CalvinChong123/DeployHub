@@ -38,8 +38,12 @@ class LocalGitRemote implements RemoteConnection
         $process = new Process([$this->shell, '-c', $command], timeout: 20);
         $process->run();
         $output = $process->getOutput().$process->getErrorOutput();
-        if (str_contains($command, "'rev-parse' '--show-toplevel'")) {
-            $output = self::posix(trim($output));
+        if (PHP_OS_FAMILY === 'Windows') {
+            $output = preg_replace_callback('~(\nDH[a-f0-9]+:root:start\n)([A-Za-z]:[/\\\\][^\r\n]*)~',
+                fn ($match) => $match[1].self::posix($match[2]), $output);
+            if (! str_contains($command, " && 'sh' '-c' ") && str_contains($command, "'rev-parse' '--show-toplevel'")) {
+                $output = self::posix(trim($output));
+            }
         }
 
         return new CommandResult($output, $process->getExitCode());

@@ -84,7 +84,7 @@ p {
     margin: 0;
 }
 h1 {
-    font-size: 30px;
+    font-size: 26px;
     letter-spacing: -1px;
     font-weight: 650;
 }
@@ -285,7 +285,7 @@ small {
     background: var(--surface2);
 }
 .hub-main {
-    padding: 38px 36px 50px;
+    padding: 28px 28px 40px;
     max-width: 1530px;
     width: 100%;
     margin: auto;
@@ -295,7 +295,7 @@ small {
     justify-content: space-between;
     align-items: center;
     gap: 20px;
-    margin-bottom: 28px;
+    margin-bottom: 22px;
 }
 .eyebrow {
     font-size: 10px;
@@ -311,6 +311,7 @@ small {
 }
 .heading-actions {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
 }
 .btn {
@@ -470,6 +471,7 @@ tr:hover td {
     background: color-mix(in srgb, var(--red) 8%, transparent);
 }
 .status[data-state="queued"],
+.status[data-state="scheduled"],
 .status[data-state="awaiting_approval"],
 .status[data-state="unknown"],
 .status[data-state="expired"] {
@@ -531,7 +533,7 @@ tr:hover td {
     font-weight: 550;
     margin-bottom: 6px;
 }
-.field input:not([type="checkbox"]),
+.field input:not([type="checkbox"]):not([type="radio"]),
 .field select,
 .field textarea,
 .search {
@@ -579,12 +581,16 @@ tr:hover td {
     border-radius: 3px;
     background: var(--bg);
 }
-.check input[type="checkbox"] {
+.check input[type="checkbox"],
+.check input[type="radio"] {
     appearance: auto;
     width: 16px;
     height: 16px;
     padding: 0;
     flex-shrink: 0;
+}
+.check input[type="radio"] {
+    border-radius: 50%;
 }
 .check small {
     color: var(--muted);
@@ -800,6 +806,287 @@ tr:hover td {
     position: absolute;
     right: 12px;
     top: 10px;
+}
+.hook-phase {
+    border-top: 1px solid var(--border, #293244);
+    padding-top: 20px;
+    margin-top: 20px;
+}
+.hook-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 15px;
+}
+.hook-heading p {
+    font-size: 13px;
+    margin-top: 5px;
+}
+.hook-controls {
+    display: flex;
+    gap: 8px;
+}
+.hook-editor {
+    border: 1px solid var(--border, #293244);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 8px;
+}
+.hook-editor .hook-heading {
+    margin-bottom: 6px;
+}
+.hook-name {
+    flex: 1;
+    min-width: 140px;
+}
+.hook-name input {
+    width: 100%;
+}
+.hook-details summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 13px;
+    padding: 4px 0;
+}
+.hook-details[open] .form-grid {
+    margin-top: 10px;
+}
+.hook-details .hook-review {
+    margin-bottom: 8px;
+}
+.hook-reviewed {
+    border-bottom: 1px solid var(--border);
+    padding: 8px 0;
+}
+.hook-reviewed summary {
+    color: var(--text);
+}
+.workflow-phase-title {
+    margin: 14px 0 4px;
+    font-size: 14px;
+}
+.hook-review {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin: 12px 0 20px;
+}
+.service-line {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 0 0 16px;
+    color: var(--muted);
+    font-size: 12px;
+    flex-wrap: wrap;
+}
+.stat-card:hover {
+    border-color: var(--accent);
+}
+.deployment-result {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.summary-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 24px;
+    padding: 22px;
+}
+.summary-grid strong {
+    font-size: 18px;
+}
+.summary-grid p {
+    margin-top: 5px;
+    font-size: 13px;
+}
+.latest-result {
+    border-top: 1px solid var(--border);
+    padding: 14px 22px;
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+.summary-note {
+    padding: 0 22px 14px;
+    font-size: 13px;
+}
+.repository-details > summary,
+.candidate-details > summary {
+    padding: 15px 22px;
+    cursor: pointer;
+    font-size: 13px;
+}
+.repository-details > summary .status {
+    margin-left: 14px;
+}
+.repository-details[open] > summary,
+.candidate-details[open] > summary {
+    border-bottom: 1px solid var(--border);
+}
+.candidate-details {
+    border-top: 1px solid var(--border);
+}
+.reviewed-workflow > summary {
+    cursor: pointer;
+    border-bottom: 0;
+}
+.reviewed-workflow > summary strong::before {
+    content: "▸ ";
+}
+.reviewed-workflow[open] > summary {
+    border-bottom: 1px solid var(--border);
+}
+.reviewed-workflow[open] > summary strong::before {
+    content: "▾ ";
+}
+.detail-actions {
+    padding-top: 0;
+}
+.inspection-note {
+    margin-bottom: 18px;
+    color: var(--muted);
+    font-size: 13px;
+}
+.inspection-note summary {
+    cursor: pointer;
+}
+.inspection-note > p {
+    margin-top: 10px;
+}
+.deployment-review-layout.reviewing {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: 20px;
+    align-items: start;
+}
+.review-main {
+    min-width: 0;
+}
+.confirmation-card {
+    position: sticky;
+    top: 84px;
+    max-height: calc(100vh - 102px);
+    overflow: auto;
+}
+.confirmation-card .btn.primary {
+    width: 100%;
+}
+.confirmation-card .field {
+    margin-top: 14px;
+}
+.confirmation-card .form-actions {
+    margin-top: 18px;
+}
+.commit-subject {
+    margin-top: 8px;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+}
+.phase-progress {
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+    padding: 18px 22px;
+    margin: 0;
+    border-bottom: 1px solid var(--border);
+}
+.phase-progress li {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--muted);
+}
+.phase-progress strong {
+    display: block;
+    font-size: 12px;
+}
+.phase-progress small {
+    display: block;
+    font-size: 11px;
+    text-transform: capitalize;
+}
+.phase-number,
+.step-number {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 26px;
+    height: 26px;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    font-size: 12px;
+}
+.phase-progress li[data-state="succeeded"],
+.step[data-state="succeeded"] .step-number {
+    color: var(--green);
+}
+.phase-progress li[data-state="running"],
+.step[data-state="running"] .step-number {
+    color: var(--accent);
+}
+.phase-progress li[data-state="failed"],
+.step[data-state="failed"] .step-number {
+    color: var(--red);
+}
+.phase-progress li[data-state="unknown"],
+.step[data-state="unknown"] .step-number {
+    color: var(--amber);
+}
+.step[data-state="running"] {
+    background: var(--accent-bg);
+}
+.step[data-state="failed"],
+.step[data-state="unknown"] {
+    border-left: 3px solid var(--red);
+}
+.step-header {
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.step-output {
+    margin-top: 10px;
+    font-size: 13px;
+}
+.step-output summary {
+    cursor: pointer;
+    color: var(--muted);
+}
+.step-output .log {
+    font-size: 12px;
+    line-height: 1.7;
+}
+@media (max-width: 1100px) {
+    .deployment-review-layout.reviewing {
+        grid-template-columns: 1fr;
+    }
+    .confirmation-card {
+        position: static;
+        max-height: none;
+    }
+}
+@media (max-width: 760px) {
+    .summary-grid {
+        grid-template-columns: 1fr;
+        gap: 18px;
+        padding: 18px;
+    }
+    .phase-progress {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        padding: 16px;
+    }
+    .deployment-summary .meta-grid {
+        grid-template-columns: 1fr;
+    }
+}
+.status[data-state="local_changes"] {
+    color: #e9be76;
 }
 @media (max-width: 760px) {
     .table-wrap {

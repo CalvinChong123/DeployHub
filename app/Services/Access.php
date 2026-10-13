@@ -36,6 +36,9 @@ class Access
         if (! $role || ! $this->project($user, $project)) {
             return false;
         }
+        if ($action !== 'view' && ($environment->trashed() || $project->trashed())) {
+            return false;
+        }
         if ($action === 'manage') {
             return $this->admin($user, $project->workspace_id);
         }

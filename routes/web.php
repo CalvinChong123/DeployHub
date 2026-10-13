@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AutomationController;
 use App\Http\Controllers\DeploymentController;
 use App\Http\Controllers\HubController;
 use App\Http\Controllers\ProfileController;
@@ -24,6 +25,9 @@ Route::middleware(['auth', 'workspace'])->group(function () {
     Route::get('/deployments/{deployment}', [DeploymentController::class, 'show'])->name('deployments.show');
     Route::get('/deployments/{deployment}/events', [DeploymentController::class, 'events'])->middleware('throttle:120,1')->name('deployments.events');
     Route::get('/security', [SecurityController::class, 'show'])->name('security');
+    Route::get('/automation', [AutomationController::class, 'index'])->name('automation.index');
+    Route::post('/automation', [AutomationController::class, 'store'])->middleware('throttle:5,1')->name('automation.store');
+    Route::delete('/automation/{grant}', [AutomationController::class, 'destroy'])->name('automation.destroy');
     Route::post('/security/setup', [SecurityController::class, 'setup'])->middleware('throttle:5,1');
     Route::post('/security/enable', [SecurityController::class, 'enable'])->middleware('throttle:5,1');
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
@@ -47,7 +51,7 @@ Route::middleware(['auth', 'workspace'])->group(function () {
             Route::post('/projects', [ProjectController::class, 'store']);
             Route::put('/projects/{project}', [ProjectController::class, 'updateProject']);
             Route::delete('/projects/{project}', [ProjectController::class, 'destroy']);
-            Route::post('/projects/{project}/environments', [ProjectController::class, 'addEnvironment']);
+            Route::get('/environments/{environment}/copy', [ProjectController::class, 'copy'])->name('projects.copy');
             Route::put('/environments/{environment}', [ProjectController::class, 'update']);
             Route::post('/environments/{environment}/permissions', [ProjectController::class, 'grant']);
             Route::get('/team', [TeamController::class, 'index'])->name('team.index');

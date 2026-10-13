@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 
 class Deployment extends Model
@@ -22,7 +23,7 @@ class Deployment extends Model
     protected static function booted(): void
     {
         static::updating(function (Deployment $deployment) {
-            if ($deployment->isDirty(['environment_id', 'user_id', 'idempotency_key', 'starting_sha', 'target_sha', 'digest', 'candidate', 'preflight', 'expires_at'])) {
+            if ($deployment->isDirty(['environment_id', 'user_id', 'idempotency_key', 'starting_sha', 'target_sha', 'digest', 'candidate', 'preflight', 'expires_at', 'scheduled_for', 'schedule_timezone'])) {
                 throw new \LogicException('Deployment candidates are immutable. Create a fresh preview.');
             }
         });
@@ -30,12 +31,24 @@ class Deployment extends Model
 
     protected function casts(): array
     {
-        return ['candidate' => 'array', 'preflight' => 'array', 'expires_at' => 'datetime', 'started_at' => 'datetime', 'finished_at' => 'datetime', 'heartbeat_at' => 'datetime', 'cancel_requested' => 'boolean', 'code_updated' => 'boolean'];
+        return ['candidate' => 'array', 'preflight' => 'array', 'scheduled_for' => 'datetime', 'expires_at' => 'datetime', 'started_at' => 'datetime', 'finished_at' => 'datetime', 'heartbeat_at' => 'datetime', 'cancel_requested' => 'boolean', 'code_updated' => 'boolean'];
+    }
+
+    public function scopeWithoutExpiredCandidates(Builder $query): Builder
+    {
+        $now = now();
+
+        return $query->where('deployments.state', '!=', 'expired')
+            ->where(fn (Builder $query) => $query
+                ->whereNotIn('deployments.state', ['awaiting_confirmation', 'awaiting_approval'])
+                ->orWhere(fn (Builder $pending) => $pending
+                    ->where('deployments.expires_at', '>', $now)
+                    ->where(fn (Builder $timing) => $timing->whereNull('deployments.scheduled_for')->orWhere('deployments.scheduled_for', '>', $now))));
     }
 
     public function environment()
     {
-        return $this->belongsTo(Environment::class);
+        return $this->belongsTo(Environment::class)->withTrashed();
     }
 
     public function user()

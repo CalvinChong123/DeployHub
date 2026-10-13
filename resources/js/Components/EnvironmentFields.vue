@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { stepLabel, type Server } from "@/hub-types";
+import { type Server } from "@/hub-types";
+import DeploymentHooks from "@/Components/DeploymentHooks.vue";
 defineProps<{ form: any; servers: Partial<Server>[] }>();
 </script>
 <template>
@@ -60,37 +61,15 @@ defineProps<{ form: any; servers: Partial<Server>[] }>();
                 }}</small></label
             >
         </div>
-        <div class="field full">
-            <label>Approved pipeline</label
-            ><small
-                >Repository preflight, fast-forward and final commit
-                verification always run. All selected steps are mandatory, in
-                the order listed.</small
-            >
-            <div
-                v-for="s in [
-                    'composer',
-                    'cache_clear',
-                    'optimize',
-                    'queue_restart',
-                    'health',
-                ]"
-                :key="s"
-                class="pipeline-option"
-            >
-                <label class="check"
-                    ><input
-                        v-model="form.pipeline"
-                        :value="s"
-                        type="checkbox"
-                    />{{ stepLabel[s]
-                    }}<small v-if="s === 'composer'"
-                        >scripts and plugins disabled</small
-                    ></label
-                >
-            </div>
-        </div>
-        <div v-if="form.pipeline.includes('health')" class="field full">
+        <DeploymentHooks :form="form" />
+        <div
+            v-if="
+                form.hooks.some(
+                    (hook: any) => hook.type === 'health' && hook.enabled,
+                )
+            "
+            class="field full"
+        >
             <label for="health_url">HTTPS health check URL</label
             ><input
                 id="health_url"

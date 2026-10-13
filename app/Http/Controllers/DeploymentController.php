@@ -9,10 +9,13 @@ use App\Services\Access;
 use App\Services\Audit;
 use App\Services\Deployment\CandidateService;
 use App\Services\Deployment\ConnectionFactory;
+use App\Services\Deployment\DeploymentConfirmation;
 use App\Services\Deployment\DeploymentException;
+use App\Services\Deployment\DeploymentScheduler;
 use App\Services\Deployment\GitInspector;
 use App\Services\Deployment\LogSanitizer;
 use App\Services\WorkerHealth;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -24,17 +27,19 @@ class DeploymentController extends Controller
     public function preflight(Request $request, Environment $environment, CandidateService $candidates)
     {
         Gate::authorize('view', $environment);
-        $candidates->inspect($environment, $request->user());
+        $result = $candidates->inspect($environment, $request->user());
 
-        return back()->with('message', 'Preflight refreshed after a completed origin fetch.');
+        return back()->with('message', 'Preflight refreshed in '.number_format($result['duration_ms'] / 1000, 1).'s. Review can reuse this result for two minutes; deployment rechecks the repository.');
     }
 
     public function store(Request $request, Environment $environment, CandidateService $candidates)
     {
         Gate::authorize('deploy', $environment);
-        $data = $request->validate(['idempotency_key' => 'required|uuid']);
+        $data = $request->validate(['idempotency_key' => 'required|uuid', 'scheduled_for' => 'nullable|date|after:now|before_or_equal:'.now()->addDays(30)->toIso8601String(),
+            'schedule_timezone' => 'required_with:scheduled_for|nullable|timezone']);
 
-        return to_route('deployments.show', $candidates->create($environment, $request->user(), $data['idempotency_key']));
+        return to_route('deployments.show', $candidates->create($environment, $request->user(), $data['idempotency_key'],
+            isset($data['scheduled_for']) ? CarbonImmutable::parse($data['scheduled_for']) : null, $data['schedule_timezone'] ?? null));
     }
 
     public function show(Request $request, Deployment $deployment, Access $access)
@@ -42,7 +47,7 @@ class DeploymentController extends Controller
         Gate::authorize('view', $deployment);
         $deployment->load(['environment.project', 'environment.server:id,name', 'user:id,name', 'steps', 'approval']);
 
-        return Inertia::render('Hub/Deployment', ['deployment' => $deployment, 'canConfirm' => Gate::allows('confirm', $deployment), 'canApprove' => Gate::allows('approve', $deployment), 'canRecover' => Gate::allows('deploy', $deployment->environment), 'canReconcile' => $access->admin($request->user(), $deployment->environment->project->workspace_id), 'workerOnline' => app(WorkerHealth::class)->status()['online']]);
+        return Inertia::render('Hub/Deployment', ['deployment' => $deployment, 'canConfirm' => Gate::allows('confirm', $deployment), 'canApprove' => Gate::allows('approve', $deployment), 'canRecover' => Gate::allows('deploy', $deployment->environment), 'canReconcile' => $access->admin($request->user(), $deployment->environment->project->workspace_id), 'workerOnline' => app(WorkerHealth::class)->status()['online'], 'scheduler' => app(DeploymentScheduler::class)->status()]);
     }
 
     public function recover(Request $request, Deployment $deployment, CandidateService $candidates)
@@ -58,40 +63,26 @@ class DeploymentController extends Controller
     {
         Gate::authorize('view', $deployment);
 
-        return response()->json($deployment->load('steps', 'approval'))->header('Cache-Control', 'no-store');
+        return response()->json($deployment->load(['environment.project', 'environment.server:id,name', 'steps', 'approval']))->header('Cache-Control', 'no-store');
     }
 
-    public function confirm(Request $request, Deployment $deployment, CandidateService $candidates)
+    public function confirm(Request $request, Deployment $deployment, DeploymentConfirmation $confirmation)
     {
         Gate::authorize('confirm', $deployment);
-        $request->validate(['reviewed' => 'accepted', 'digest' => 'required|string|size:64']);
-        $queue = DB::transaction(function () use ($request, $deployment, $candidates) {
-            Environment::whereKey($deployment->environment_id)->lockForUpdate()->firstOrFail();
-            $deployment = Deployment::whereKey($deployment->id)->lockForUpdate()->firstOrFail();
-            if (in_array($deployment->state, ['queued', 'running', 'awaiting_approval'], true)) {
-                return false;
-            }
-            if ($deployment->state !== 'awaiting_confirmation') {
-                throw new DeploymentException('This candidate cannot be confirmed again. Create a fresh preview.');
-            }
-            if (! hash_equals($deployment->digest, $request->string('digest')->toString())) {
-                throw new DeploymentException('Candidate digest does not match.');
-            }
-            $candidates->validate($deployment);
-            if (Deployment::where('active_environment_id', $deployment->environment_id)->exists()) {
-                throw new DeploymentException('Another active deployment reserves this environment.');
-            }
-            $requires = $deployment->candidate['requires_approval'] || $deployment->candidate['production'];
-            $deployment->update(['state' => $requires ? 'awaiting_approval' : 'queued', 'active_environment_id' => $deployment->environment_id]);
-            Audit::record($deployment->environment->project->workspace_id, $request->user()->id, 'deployment.confirmed', 'deployment:'.$deployment->id, ['digest' => $deployment->digest]);
-            if (! $requires) {
-                ExecuteDeployment::dispatch($deployment->id)->onConnection('database')->beforeCommit();
-            }
+        $data = $request->validate(['reviewed' => 'accepted', 'digest' => 'required|string|size:64',
+            'scheduled_for' => 'nullable|date|after:now|before_or_equal:'.now()->addDays(30)->toIso8601String(),
+            'schedule_timezone' => 'required_with:scheduled_for|nullable|timezone']);
+        $confirmed = $confirmation->confirm($deployment, $request->user(), $data['digest'],
+            isset($data['scheduled_for']) ? CarbonImmutable::parse($data['scheduled_for']) : null, $data['schedule_timezone'] ?? null);
 
-            return ! $requires;
-        });
+        $message = match ($confirmed->state) {
+            'scheduled' => 'Scheduled. The reviewed commit will enter the queue at the selected time.',
+            'queued' => 'Queued. The worker will revalidate the exact candidate.',
+            'awaiting_approval' => 'Awaiting independent approval.',
+            default => 'This deployment request has already been handled.',
+        };
 
-        return back()->with('message', $queue ? 'Queued. The worker will revalidate the exact candidate.' : 'Awaiting independent approval or already queued.');
+        return ($confirmed->id === $deployment->id ? back() : to_route('deployments.show', $confirmed))->with('message', $message);
     }
 
     public function approve(Request $request, Deployment $deployment, CandidateService $candidates)
@@ -108,12 +99,14 @@ class DeploymentController extends Controller
             }
             $candidates->validate($deployment);
             $deployment->approval()->create(['user_id' => $request->user()->id, 'digest' => $deployment->digest, 'outcome' => 'approved', 'expires_at' => $deployment->expires_at]);
-            $deployment->update(['state' => 'queued']);
+            $deployment->update(['state' => $deployment->scheduled_for ? 'scheduled' : 'queued']);
             Audit::record($deployment->environment->project->workspace_id, $request->user()->id, 'deployment.approved', 'deployment:'.$deployment->id, ['digest' => $deployment->digest]);
-            ExecuteDeployment::dispatch($deployment->id)->onConnection('database')->beforeCommit();
+            if (! $deployment->scheduled_for) {
+                ExecuteDeployment::dispatch($deployment->id)->onConnection('database')->beforeCommit();
+            }
         });
 
-        return back()->with('message', 'Exact candidate approved and queued.');
+        return back()->with('message', $deployment->fresh()->scheduled_for ? 'Exact candidate approved and scheduled.' : 'Exact candidate approved and queued.');
     }
 
     public function reject(Request $request, Deployment $deployment, LogSanitizer $sanitizer)
@@ -138,7 +131,7 @@ class DeploymentController extends Controller
         Gate::authorize('confirm', $deployment);
         DB::transaction(function () use ($request, $deployment) {
             $deployment = Deployment::whereKey($deployment->id)->lockForUpdate()->firstOrFail();
-            if (in_array($deployment->state, ['awaiting_confirmation', 'awaiting_approval', 'queued'], true)) {
+            if (in_array($deployment->state, ['awaiting_confirmation', 'awaiting_approval', 'scheduled', 'queued'], true)) {
                 $deployment->update(['state' => 'cancelled', 'active_environment_id' => null, 'finished_at' => now()]);
             } elseif ($deployment->state === 'running') {
                 $deployment->update(['cancel_requested' => true]);

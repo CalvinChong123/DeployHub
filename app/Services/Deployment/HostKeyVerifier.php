@@ -17,8 +17,11 @@ class HostKeyVerifier
 
     public function verify(?string $expected, string $actual): void
     {
-        if (! $expected || ! hash_equals($expected, $actual)) {
-            throw new DeploymentException('SSH host fingerprint is unverified or changed. Ask an administrator to verify it out of band.');
+        if (! $expected) {
+            throw new DeploymentException('SSH host fingerprint has not been trusted. Open Servers, discover the fingerprint and choose how to trust it before testing authentication.');
+        }
+        if (! hash_equals($expected, $actual)) {
+            throw new DeploymentException('SSH host fingerprint changed. Connection blocked; independently verify the new host key before replacing the saved fingerprint.');
         }
     }
 }

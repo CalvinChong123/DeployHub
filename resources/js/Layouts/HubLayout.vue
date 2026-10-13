@@ -23,19 +23,31 @@ function toggleTheme() {
     document.documentElement.dataset.theme = theme.value;
     localStorage.setItem("deployhub-theme", theme.value);
 }
-const nav = computed(() => [
-    { name: "Overview", url: "/dashboard", icon: "◈" },
-    { name: "Projects", url: "/projects", icon: "▤" },
-    ...(admin.value ? [{ name: "Servers", url: "/servers", icon: "▥" }] : []),
-    { name: "Deployment activity", url: "/activity", icon: "↗" },
-    { name: "Approvals", url: "/approvals", icon: "✓" },
-    ...(admin.value
-        ? [
-              { name: "Team & access", url: "/team", icon: "♙" },
-              { name: "Audit log", url: "/audit-logs", icon: "≡" },
-          ]
-        : []),
-    { name: "Security & profile", url: "/security", icon: "⚙" },
+const navGroups = computed(() => [
+    {
+        name: "Deployments",
+        items: [
+            { name: "Overview", url: "/dashboard", icon: "◈" },
+            { name: "Projects", url: "/projects", icon: "▤" },
+            { name: "Deployment activity", url: "/activity", icon: "↗" },
+            { name: "Approvals", url: "/approvals", icon: "✓" },
+        ],
+    },
+    {
+        name: "Manage",
+        items: [
+            ...(admin.value
+                ? [{ name: "Servers", url: "/servers", icon: "▥" }]
+                : []),
+            ...(admin.value
+                ? [
+                      { name: "Team & access", url: "/team", icon: "♙" },
+                      { name: "Audit log", url: "/audit-logs", icon: "≡" },
+                  ]
+                : []),
+            { name: "Security & profile", url: "/security", icon: "⚙" },
+        ],
+    },
 ]);
 </script>
 <template>
@@ -76,29 +88,28 @@ const nav = computed(() => [
                     <strong>{{ page.props.auth?.workspace?.name }}</strong
                     ><small>Private workspace</small>
                 </div>
-                <span>⌄</span>
             </div>
-            <div class="nav-caption">WORKSPACE</div>
             <nav aria-label="Main navigation">
-                <Link
-                    v-for="item in nav"
-                    :key="item.url"
-                    :href="item.url"
-                    :class="[
-                        'nav-link',
-                        { active: page.url.split('?')[0] === item.url },
-                    ]"
-                    @click="open = false"
-                    ><span class="nav-icon" aria-hidden="true">{{
-                        item.icon
-                    }}</span
-                    >{{ item.name }}</Link
-                >
+                <template v-for="group in navGroups" :key="group.name">
+                    <div class="nav-caption">{{ group.name }}</div>
+                    <Link
+                        v-for="item in group.items"
+                        :key="item.url"
+                        :href="item.url"
+                        :class="[
+                            'nav-link',
+                            { active: page.url.split('?')[0] === item.url },
+                        ]"
+                        @click="open = false"
+                        ><span class="nav-icon" aria-hidden="true">{{
+                            item.icon
+                        }}</span
+                        >{{ item.name }}</Link
+                    >
+                </template>
             </nav>
             <div class="sidebar-note">
-                <span class="mini-dot"></span>Local-first deployment<br /><small
-                    >Fixed pipelines. Verified hosts.</small
-                >
+                <span class="mini-dot"></span>Private deployment workspace
             </div>
             <div class="profile-box">
                 <span class="profile-avatar">{{
@@ -148,7 +159,6 @@ const nav = computed(() => [
             <main id="main" class="hub-main" tabindex="-1">
                 <div class="page-heading">
                     <div>
-                        <p class="eyebrow">DEPLOYHUB / WORKSPACE</p>
                         <h1>{{ title }}</h1>
                         <p v-if="subtitle" class="subtitle">{{ subtitle }}</p>
                     </div>
@@ -171,8 +181,7 @@ const nav = computed(() => [
                 <slot />
             </main>
             <footer class="hub-footer">
-                <span>DeployHub · controlled deployments</span
-                ><span>Review. Approve. Ship.</span>
+                <span>DeployHub</span>
             </footer>
         </div>
     </div>

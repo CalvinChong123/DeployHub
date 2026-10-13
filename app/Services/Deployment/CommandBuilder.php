@@ -49,6 +49,7 @@ class CommandBuilder
     public function step(string $path, string $type, ?string $healthUrl): string
     {
         return match ($type) {
+            'hard_reset' => $this->git($path, ['reset', '--hard', 'HEAD']),
             'composer' => $this->at($path, ['composer', 'install', '--no-dev', '--no-interaction', '--prefer-dist', '--optimize-autoloader', '--no-scripts', '--no-plugins']),
             'cache_clear' => $this->at($path, ['php', 'artisan', 'optimize:clear', '--no-interaction']),
             'optimize' => $this->at($path, ['php', 'artisan', 'optimize', '--no-interaction']),
@@ -56,6 +57,15 @@ class CommandBuilder
             'health' => $this->at($path, ['curl', '--fail', '--silent', '--show-error', '--max-time', '15', '--proto', '=https', '--max-redirs', '0', '--output', '/dev/null', '--write-out', '%{http_code}', $this->healthUrl($healthUrl)]),
             default => throw new DeploymentException('This pipeline step is not allowlisted.'),
         };
+    }
+
+    public function hook(string $path, string $script): string
+    {
+        if (trim($script) === '' || strlen($script) > 40000 || str_contains($script, "\0")) {
+            throw new DeploymentException('Invalid deployment hook script.');
+        }
+
+        return $this->at($path, ['env', 'GIT_TERMINAL_PROMPT=0', 'sh', '-e', '-c', str_replace(["\r\n", "\r"], "\n", $script)]);
     }
 
     public function healthUrl(?string $url): string
