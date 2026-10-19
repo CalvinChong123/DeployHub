@@ -5,17 +5,23 @@ namespace Tests\Feature;
 use App\Jobs\ExecuteDeployment;
 use App\Models\AutomationGrant;
 use App\Models\Deployment;
+use App\Models\Environment;
 use App\Models\EnvironmentPermission;
+use App\Models\Project;
+use App\Models\Workspace;
 use App\Services\AutomationAccess;
 use App\Services\Deployment\CommandResult;
 use App\Services\Deployment\DeploymentExecutor;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia as Assert;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PragmaRX\Google2FA\Google2FA;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\Support\HubFixture;
 use Tests\TestCase;
 
@@ -33,7 +39,7 @@ class DeploymentMcpTest extends TestCase
         $this->fixture();
         config(['deployhub.require_mfa' => true, 'app.debug' => false]);
         $this->owner->forceFill(['two_factor_secret' => (new Google2FA)->generateSecretKey(), 'two_factor_confirmed_at' => now()])->save();
-        [$this->grant, $this->token] = app(AutomationAccess::class)->issue($this->owner, $this->environment, 'Fixture Codex', 14);
+        [$this->grant, $this->token] = app(AutomationAccess::class)->issue($this->owner, collect([$this->environment]), 'Fixture Codex', 14);
         Queue::fake();
     }
 
@@ -64,6 +70,251 @@ class DeploymentMcpTest extends TestCase
     private function execute(array $preview): array
     {
         return $this->toolResult($this->callTool('execute_deployment', ['deployment_id' => $preview['deployment_id'], 'digest' => $preview['digest']]));
+    }
+
+    private function anotherTarget(string $name = 'Portal', ?Workspace $workspace = null): Environment
+    {
+        $project = Project::create(['workspace_id' => ($workspace ?? $this->workspace)->id, 'name' => $name, 'repository' => $this->environment->project->repository]);
+        $environment = $project->environments()->create(['server_id' => $this->environment->server_id,
+            'name' => 'Staging', 'path' => '/home/deploy/'.strtolower($name), 'branch' => 'staging',
+            'pipeline' => ['health'], 'health_url' => 'https://fixture.test/up']);
+        $project->users()->attach($this->owner);
+        EnvironmentPermission::create(['environment_id' => $environment->id, 'user_id' => $this->owner->id,
+            'can_view' => true, 'can_deploy' => true, 'can_approve' => true]);
+
+        return $environment;
+    }
+
+    private function prepareTarget(Environment $environment): array
+    {
+        $this->remote->root = $environment->path;
+
+        return $this->toolResult($this->callTool('prepare_deployment', ['environment_id' => $environment->id,
+            'expected_sha' => $this->remote->target, 'idempotency_key' => (string) Str::uuid()]));
+    }
+
+    public function test_one_token_lists_only_its_explicit_targets_and_never_includes_new_projects(): void
+    {
+        $second = $this->anotherTarget();
+        [$this->grant, $this->token] = app(AutomationAccess::class)->issue($this->owner, collect([$second, $this->environment]), 'Selected projects', 14);
+        $unselected = $this->anotherTarget('Unselected');
+        $targets = $this->toolResult($this->callTool('list_deployment_targets'))['targets'];
+        $this->assertSame([$this->environment->id, $second->id], array_column($targets, 'environment_id'));
+        $this->assertEmpty($this->remote->commands);
+        $this->callTool('prepare_deployment', ['environment_id' => $unselected->id, 'expected_sha' => $this->remote->target,
+            'idempotency_key' => (string) Str::uuid()])->assertOk()->assertJsonPath('result.isError', true);
+        $this->assertEmpty($this->remote->commands);
+        $serialized = json_encode($this->grant->fresh(['environments'])->toArray());
+        foreach ($this->grant->environments as $environment) {
+            $this->assertStringNotContainsString($environment->pivot->target_fingerprint, $serialized);
+        }
+        $this->assertStringNotContainsString($this->grant->token_hash, $serialized);
+    }
+
+    public function test_selected_targets_use_independent_candidates_and_the_same_token_can_execute_and_poll_each(): void
+    {
+        $second = $this->anotherTarget();
+        [$this->grant, $this->token] = app(AutomationAccess::class)->issue($this->owner, collect([$this->environment, $second]), 'Two projects', 14);
+        $firstPreview = $this->prepareTarget($this->environment);
+        $secondPreview = $this->prepareTarget($second);
+        $this->assertNotSame($firstPreview['deployment_id'], $secondPreview['deployment_id']);
+        foreach ([$firstPreview, $secondPreview] as $preview) {
+            $this->assertSame('queued', $this->execute($preview)['state']);
+            $this->remote->root = Environment::findOrFail($preview['environment_id'])->path;
+            $this->remote->head = $preview['starting_sha'];
+            app(DeploymentExecutor::class)->execute($preview['deployment_id']);
+            $status = $this->toolResult($this->callTool('get_deployment_status', ['deployment_id' => $preview['deployment_id']]));
+            $this->assertSame('succeeded', $status['state']);
+            $this->assertSame($preview['environment_id'], $status['environment_id']);
+            $this->assertSame($preview['target_sha'], $status['target_sha']);
+            $this->assertSame('succeeded', $this->execute($preview)['state']);
+        }
+        Queue::assertPushed(ExecuteDeployment::class, 2);
+        [, $otherToken] = app(AutomationAccess::class)->issue($this->owner, collect([$this->environment, $second]), 'Other client', 14);
+        $this->callTool('get_deployment_status', ['deployment_id' => $secondPreview['deployment_id']], $otherToken)->assertOk()->assertJsonPath('result.isError', true);
+    }
+
+    public static function targetRevocations(): array
+    {
+        return array_map(fn ($reason) => [$reason], ['permission', 'scope', 'branch', 'production', 'archive']);
+    }
+
+    #[DataProvider('targetRevocations')]
+    public function test_one_invalid_target_is_blocked_by_api_and_worker_without_disabling_other_targets(string $reason): void
+    {
+        $second = $this->anotherTarget();
+        [$this->grant, $this->token] = app(AutomationAccess::class)->issue($this->owner, collect([$this->environment, $second]), 'Two projects', 14);
+        $preview = $this->prepareTarget($second);
+        $this->execute($preview);
+        $commandCount = count($this->remote->commands);
+        match ($reason) {
+            'permission' => EnvironmentPermission::where('environment_id', $second->id)->update(['can_deploy' => false]),
+            'scope' => $this->grant->environments()->detach($second),
+            'branch' => $second->update(['branch' => 'changed']),
+            'production' => $second->update(['production' => true]),
+            'archive' => $second->delete(),
+        };
+        $targets = $this->toolResult($this->callTool('list_deployment_targets'))['targets'];
+        $this->assertSame([$this->environment->id], array_column($targets, 'environment_id'));
+        $this->callTool('get_deployment_status', ['deployment_id' => $preview['deployment_id']])->assertOk()->assertJsonPath('result.isError', true);
+        $this->callTool('execute_deployment', ['deployment_id' => $preview['deployment_id'], 'digest' => $preview['digest']])->assertOk()->assertJsonPath('result.isError', true);
+        app(DeploymentExecutor::class)->execute($preview['deployment_id']);
+        $this->assertSame('failed', Deployment::findOrFail($preview['deployment_id'])->state);
+        $this->assertCount($commandCount, $this->remote->commands);
+        $this->remote->root = $this->environment->path;
+        $firstPreview = $this->prepare();
+        $this->execute($firstPreview);
+        app(DeploymentExecutor::class)->execute($firstPreview['deployment_id']);
+        $this->assertSame('succeeded', $this->toolResult($this->callTool('get_deployment_status', ['deployment_id' => $firstPreview['deployment_id']]))['state']);
+    }
+
+    public function test_target_revocation_during_a_step_stops_that_target_even_when_another_target_remains_usable(): void
+    {
+        $second = $this->anotherTarget();
+        $second->update(['hooks' => [['id' => (string) Str::uuid(), 'name' => 'Fixture step', 'script' => 'fixture-step', 'phase' => 'post', 'enabled' => true]]]);
+        [$this->grant, $this->token] = app(AutomationAccess::class)->issue($this->owner, collect([$this->environment, $second]), 'Two projects', 14);
+        $preview = $this->prepareTarget($second);
+        $this->execute($preview);
+        $this->remote->hookHandlers['fixture-step'] = function () use ($second) {
+            EnvironmentPermission::where('environment_id', $second->id)->update(['can_deploy' => false]);
+
+            return new CommandResult('Completed fixture step.', 0);
+        };
+        app(DeploymentExecutor::class)->execute($preview['deployment_id']);
+        $deployment = Deployment::findOrFail($preview['deployment_id']);
+        $this->assertSame('failed', $deployment->state);
+        $this->assertTrue($deployment->code_updated);
+        $this->assertFalse($deployment->steps()->where('type', 'verify_head')->exists());
+        $this->assertSame([$this->environment->id], array_column($this->toolResult($this->callTool('list_deployment_targets'))['targets'], 'environment_id'));
+    }
+
+    public function test_revoking_a_multi_target_token_stops_all_queued_targets_before_ssh(): void
+    {
+        $second = $this->anotherTarget();
+        [$this->grant, $this->token] = app(AutomationAccess::class)->issue($this->owner, collect([$this->environment, $second]), 'Two projects', 14);
+        $previews = [$this->prepareTarget($this->environment), $this->prepareTarget($second)];
+        foreach ($previews as $preview) {
+            $this->execute($preview);
+        }
+        $commandCount = count($this->remote->commands);
+        $this->grant->update(['revoked_at' => now()]);
+        $this->callTool('list_deployment_targets')->assertUnauthorized();
+        foreach ($previews as $preview) {
+            app(DeploymentExecutor::class)->execute($preview['deployment_id']);
+            $this->assertSame('failed', Deployment::findOrFail($preview['deployment_id'])->state);
+        }
+        $this->assertCount($commandCount, $this->remote->commands);
+    }
+
+    public function test_issuance_service_rejects_cross_workspace_scopes_even_with_rights_in_both_workspaces(): void
+    {
+        $foreign = Workspace::create(['name' => 'Foreign', 'slug' => 'foreign']);
+        $foreign->users()->attach($this->owner, ['role' => 'owner', 'active' => true]);
+        $second = $this->anotherTarget('Foreign', $foreign);
+        try {
+            app(AutomationAccess::class)->issue($this->owner, collect([$this->environment, $second]), 'Mixed workspace', 14);
+            $this->fail('A token must not span workspaces.');
+        } catch (HttpException $exception) {
+            $this->assertSame(403, $exception->getStatusCode());
+        }
+        $this->assertDatabaseCount('automation_grants', 1);
+        $this->assertDatabaseCount('automation_grant_targets', 1);
+    }
+
+    public function test_multi_target_token_confirms_production_for_the_requested_target(): void
+    {
+        $second = $this->anotherTarget();
+        $second->update(['production' => true]);
+        [$this->grant, $this->token] = app(AutomationAccess::class)->issue($this->owner, collect([$this->environment, $second]), 'Mixed targets', 14);
+        $targets = $this->toolResult($this->callTool('list_deployment_targets'))['targets'];
+        $this->assertFalse($targets[0]['requires_independent_approval']);
+        $this->assertFalse($targets[1]['requires_independent_approval']);
+        $preview = $this->prepareTarget($second);
+        $this->assertSame('queued', $this->execute($preview)['state']);
+        $this->assertSame($second->id, Deployment::findOrFail($preview['deployment_id'])->active_environment_id);
+        Queue::assertPushed(ExecuteDeployment::class, 1);
+        app(DeploymentExecutor::class)->execute($preview['deployment_id']);
+        $this->assertSame('succeeded', Deployment::findOrFail($preview['deployment_id'])->state);
+    }
+
+    public function test_browser_can_issue_a_multi_target_token_and_projects_are_projected_without_fingerprints(): void
+    {
+        $second = $this->anotherTarget();
+        $this->actingAs($this->owner)->withSession(['mfa_verified' => true])->post('/automation', [
+            'name' => 'Selected projects', 'environment_ids' => [$this->environment->id, $second->id], 'days' => 7, 'password' => 'password',
+        ])->assertRedirect('/automation')->assertSessionHas('automation_token');
+        $grant = AutomationGrant::latest('id')->firstOrFail();
+        $this->assertSame([$this->environment->id, $second->id], $grant->environments->modelKeys());
+        $this->get('/automation')->assertInertia(fn (Assert $page) => $page->component('Hub/Automation')->has('targets', 2)
+            ->has('grants.0.targets', 2)->where('grants.0.targets.1.id', $second->id)->missing('grants.0.token_hash')->missing('grants.0.targets.0.target_fingerprint'));
+    }
+
+    public static function invalidScopeSelections(): array
+    {
+        return [['empty'], ['duplicate'], ['single_target_payload'], ['too_many'], ['ungranted'], ['foreign_workspace']];
+    }
+
+    #[DataProvider('invalidScopeSelections')]
+    public function test_invalid_target_selection_never_issues_a_partial_grant(string $reason): void
+    {
+        $second = $this->anotherTarget();
+        $ids = [$this->environment->id, $second->id];
+        $extra = [];
+        if ($reason === 'empty') {
+            $ids = [];
+        } elseif ($reason === 'duplicate') {
+            $ids = [$this->environment->id, $this->environment->id];
+        } elseif ($reason === 'single_target_payload') {
+            $extra['environment_id'] = $this->environment->id;
+        } elseif ($reason === 'too_many') {
+            $ids = range(1, AutomationAccess::MAX_TARGETS + 1);
+        } elseif ($reason === 'ungranted') {
+            EnvironmentPermission::where('environment_id', $second->id)->update(['can_deploy' => false]);
+        } else {
+            $foreign = Workspace::create(['name' => 'Foreign', 'slug' => 'foreign']);
+            $second->project->update(['workspace_id' => $foreign->id]);
+        }
+        $data = [
+            'name' => 'Invalid scope', 'environment_ids' => $ids, 'days' => 7, 'password' => 'password', ...$extra,
+        ];
+        if ($reason === 'single_target_payload') {
+            unset($data['environment_ids']);
+        }
+        $response = $this->actingAs($this->owner)->withSession(['mfa_verified' => true])->post('/automation', $data);
+        if ($reason === 'ungranted') {
+            $response->assertForbidden();
+        } elseif ($reason === 'foreign_workspace') {
+            $response->assertNotFound();
+        } else {
+            $response->assertSessionHasErrors();
+        }
+        $this->assertDatabaseCount('automation_grants', 1);
+        $this->assertDatabaseCount('automation_grant_targets', 1);
+    }
+
+    public function test_forward_scope_migration_transfers_data_and_removes_the_old_columns(): void
+    {
+        $preview = $this->prepare();
+        $before = Deployment::findOrFail($preview['deployment_id'])->only('candidate', 'digest', 'target_sha');
+        $hash = $this->grant->token_hash;
+        $fingerprint = $this->grant->environments->first()->pivot->target_fingerprint;
+        Schema::drop('automation_grant_targets');
+        Schema::table('automation_grants', function ($table) {
+            $table->foreignId('environment_id')->nullable()->constrained()->restrictOnDelete();
+            $table->string('target_fingerprint', 64)->nullable();
+        });
+        DB::table('automation_grants')->where('id', $this->grant->id)->update([
+            'environment_id' => $this->environment->id, 'target_fingerprint' => $fingerprint,
+        ]);
+        $migration = require database_path('migrations/2026_10_18_000001_create_automation_grant_targets.php');
+        $migration->up();
+        $this->assertFalse(Schema::hasColumn('automation_grants', 'environment_id'));
+        $this->assertFalse(Schema::hasColumn('automation_grants', 'target_fingerprint'));
+        $this->assertSame($hash, $this->grant->fresh()->token_hash);
+        $this->assertSame($before, Deployment::findOrFail($preview['deployment_id'])->only('candidate', 'digest', 'target_sha'));
+        $this->assertSame('queued', $this->execute($preview)['state']);
+        app(DeploymentExecutor::class)->execute($preview['deployment_id']);
+        $this->assertSame('succeeded', $this->toolResult($this->callTool('get_deployment_status', ['deployment_id' => $preview['deployment_id']]))['state']);
     }
 
     public function test_protocol_initialization_and_tools_are_available_with_a_bearer_token(): void
@@ -155,7 +406,7 @@ class DeploymentMcpTest extends TestCase
             'idempotency_key' => (string) Str::uuid()])->assertOk()->assertJsonPath('result.isError', true);
         $this->assertEmpty($this->remote->commands);
         $preview = $this->prepare();
-        [, $otherToken] = app(AutomationAccess::class)->issue($this->owner, $this->environment, 'Another client', 14);
+        [, $otherToken] = app(AutomationAccess::class)->issue($this->owner, collect([$this->environment]), 'Another client', 14);
         $this->callTool('get_deployment_status', ['deployment_id' => $preview['deployment_id']], $otherToken)->assertOk()->assertJsonPath('result.isError', true);
         $web = $this->candidate();
         $this->callTool('execute_deployment', ['deployment_id' => $web->id, 'digest' => $web->digest])->assertOk()->assertJsonPath('result.isError', true);
@@ -256,7 +507,7 @@ class DeploymentMcpTest extends TestCase
 
     public function test_token_issuance_requires_verified_mfa_password_and_explicit_target_access(): void
     {
-        $data = ['name' => 'Phone Codex', 'environment_id' => $this->environment->id, 'days' => 7, 'password' => 'password'];
+        $data = ['name' => 'Phone Codex', 'environment_ids' => [$this->environment->id], 'days' => 7, 'password' => 'password'];
         $this->actingAs($this->owner)->post('/automation', $data)->assertRedirect('/two-factor-challenge');
         $this->withSession(['mfa_verified' => true])->post('/automation', [...$data, 'password' => 'wrong'])->assertSessionHasErrors('password');
         $this->post('/automation', $data)->assertRedirect('/automation')->assertSessionHas('automation_token');
@@ -278,7 +529,21 @@ class DeploymentMcpTest extends TestCase
         config(['deployhub.require_mfa' => false]);
         $this->owner->forceFill(['two_factor_confirmed_at' => null])->save();
         $this->actingAs($this->owner)->withSession(['mfa_verified' => true])->post('/automation',
-            ['name' => 'Unverified', 'environment_id' => $this->environment->id, 'days' => 7, 'password' => 'password'])->assertForbidden();
+            ['name' => 'Unverified', 'environment_ids' => [$this->environment->id], 'days' => 7, 'password' => 'password'])->assertForbidden();
+    }
+
+    public function test_new_token_survives_an_inertia_asset_version_reload_and_is_delivered_once(): void
+    {
+        config(['app.asset_url' => 'https://assets.fixture.test/current']);
+        $this->actingAs($this->owner)->withSession(['mfa_verified' => true])->post('/automation', [
+            'name' => 'Version reload', 'environment_ids' => [$this->environment->id], 'days' => 7, 'password' => 'password',
+        ], ['X-Inertia' => 'true', 'X-Inertia-Version' => 'previous-build'])->assertRedirect('/automation');
+        $this->get('/automation', ['X-Inertia' => 'true', 'X-Inertia-Version' => 'previous-build'])
+            ->assertStatus(409)->assertSessionHas('automation_token');
+        $this->get('/automation')->assertOk()->assertViewHas('page', fn ($page) => $page['encryptHistory'] === true)
+            ->assertInertia(fn (Assert $page) => $page->where('issuedToken', fn ($token) => is_string($token) && str_starts_with($token, 'dhai_')));
+        $this->get('/automation')->assertInertia(fn (Assert $page) => $page->where('issuedToken', null));
+        $this->assertDatabaseCount('automation_grants', 2);
     }
 
     public function test_only_owner_can_revoke_a_token(): void
@@ -295,30 +560,35 @@ class DeploymentMcpTest extends TestCase
         return [['production'], ['requires_approval']];
     }
 
+    public function test_legacy_mcp_pending_request_requires_explicit_execute_and_queues_once(): void
+    {
+        $preview = $this->prepare();
+        $deployment = Deployment::findOrFail($preview['deployment_id']);
+        $deployment->update(['state' => 'awaiting_approval', 'active_environment_id' => $this->environment->id]);
+        $status = $this->toolResult($this->callTool('get_deployment_status', ['deployment_id' => $deployment->id]));
+        $this->assertSame('awaiting_approval', $status['state']);
+        $this->assertFalse($status['requires_independent_approval']);
+        Queue::assertNothingPushed();
+        $this->assertSame('queued', $this->execute($preview)['state']);
+        $this->assertSame('queued', $this->execute($preview)['state']);
+        Queue::assertPushed(ExecuteDeployment::class, 1);
+        $this->assertSame($preview['digest'], $deployment->fresh()->digest);
+    }
+
     #[DataProvider('protectedTargets')]
-    public function test_protected_targets_wait_for_independent_approval_before_execution(string $flag): void
+    public function test_production_and_legacy_protected_targets_execute_without_approval(string $flag): void
     {
         $this->environment->update([$flag => true]);
-        [$this->grant, $this->token] = app(AutomationAccess::class)->issue($this->owner, $this->environment, 'Protected target', 14);
+        [$this->grant, $this->token] = app(AutomationAccess::class)->issue($this->owner, collect([$this->environment]), 'Deployment target', 14);
         $target = $this->toolResult($this->callTool('list_deployment_targets'))['targets'][0];
-        $this->assertTrue($target['requires_independent_approval']);
+        $this->assertFalse($target['requires_independent_approval']);
         $preview = $this->prepare();
-        $requested = $this->execute($preview);
-        $this->assertSame('awaiting_approval', $requested['state']);
-        $this->assertStringContainsString('independent', $requested['message']);
-        $this->assertSame('awaiting_approval', $this->execute($preview)['state']);
-        Queue::assertNothingPushed();
-        $commandCount = count($this->remote->commands);
-        app(DeploymentExecutor::class)->execute($preview['deployment_id']);
-        $this->assertCount($commandCount, $this->remote->commands);
-        $this->actingAs($this->owner)->withSession(['mfa_verified' => true])->post('/deployments/'.$preview['deployment_id'].'/approve',
-            ['digest' => $preview['digest'], 'reviewed' => true])->assertForbidden();
-        $approver = $this->member();
-        $approver->forceFill(['two_factor_secret' => (new Google2FA)->generateSecretKey(), 'two_factor_confirmed_at' => now()])->save();
-        $this->actingAs($approver)->withSession(['mfa_verified' => true])->post('/deployments/'.$preview['deployment_id'].'/approve',
-            ['digest' => $preview['digest'], 'reviewed' => true])->assertSessionMissing('error');
+        $this->assertFalse($preview['requires_independent_approval']);
+        $this->assertSame('queued', $this->execute($preview)['state']);
+        $this->assertSame('queued', $this->execute($preview)['state']);
         Queue::assertPushed(ExecuteDeployment::class, 1);
         app(DeploymentExecutor::class)->execute($preview['deployment_id']);
-        $this->assertSame('succeeded', $this->toolResult($this->callTool('get_deployment_status', ['deployment_id' => $preview['deployment_id']]))['state']);
+        $this->assertSame('succeeded', Deployment::findOrFail($preview['deployment_id'])->state);
+        $this->assertDatabaseCount('deployment_approvals', 0);
     }
 }

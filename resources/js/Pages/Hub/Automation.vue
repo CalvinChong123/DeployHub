@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { Head, Link, router, useForm } from "@inertiajs/vue3";
 import HubLayout from "@/Layouts/HubLayout.vue";
 import HubErrors from "@/Components/HubErrors.vue";
@@ -14,12 +14,27 @@ const props = defineProps<{
 }>();
 const form = useForm({
     name: "Codex deployments",
-    environment_id: props.targets[0]?.id ?? "",
+    environment_ids: [] as number[],
     days: 14,
     password: "",
 });
 const revoking = ref<number | null>(null);
 const copyMessage = ref("");
+const issuedTokenCard = ref<HTMLElement | null>(null);
+const issuedTokenInput = ref<HTMLInputElement | null>(null);
+
+watch(
+    () => props.issuedToken,
+    (token) => {
+        copyMessage.value = "";
+        if (!token) return;
+        nextTick(() => {
+            issuedTokenCard.value?.scrollIntoView({ block: "start" });
+            issuedTokenInput.value?.focus({ preventScroll: true });
+        });
+    },
+    { immediate: true },
+);
 const connection = computed(
     () => `[mcp_servers.deployhub]
 url = ${JSON.stringify(props.mcpUrl)}
@@ -53,24 +68,36 @@ async function copyToken() {
     <Head title="AI deployment access" />
     <HubLayout
         title="AI deployment access"
-        subtitle="Let Codex deploy an authorized deployment target when you ask."
+        subtitle="Let Codex deploy the targets you explicitly authorize when you ask."
     >
         <template #actions
             ><Link href="/security" class="btn"
                 >Account security</Link
             ></template
         >
-        <section v-if="issuedToken" class="card" style="margin-bottom: 24px">
-            <div class="card-heading"><h2>Copy your new token</h2></div>
+        <section
+            v-if="issuedToken"
+            ref="issuedTokenCard"
+            class="card"
+            style="margin-bottom: 24px"
+            aria-labelledby="new-token-heading"
+        >
+            <div class="card-heading">
+                <h2 id="new-token-heading">Copy your new token</h2>
+            </div>
             <div class="card-content">
                 <p class="muted">
-                    This token will not be shown again. Store it securely as
-                    DEPLOYHUB_AI_TOKEN on the computer running Codex.
+                    Copy this token now; it will not be shown again after you
+                    leave or refresh this page. DeployHub does not save it to
+                    your computer or configure Codex automatically. Store it
+                    securely as DEPLOYHUB_AI_TOKEN on the computer running
+                    Codex.
                 </p>
                 <div class="field">
                     <label for="issued-token">Automation token</label
                     ><input
                         id="issued-token"
+                        ref="issuedTokenInput"
                         :value="issuedToken"
                         readonly
                         autocomplete="off"
@@ -92,14 +119,14 @@ async function copyToken() {
         <div class="section-grid">
             <section class="card">
                 <div class="card-heading">
-                    <h2>Authorize a deployment target</h2>
+                    <h2>Authorize deployment targets</h2>
                 </div>
                 <div class="card-content">
                     <p class="muted">
                         Each token can prepare, execute and read its own
-                        deployments for one target. Unprotected targets can run
-                        without a website confirmation. Production and protected
-                        targets retain their independent approval requirement.
+                        deployments for the targets you select in this
+                        workspace, including production. Execute confirms the
+                        reviewed candidate without a separate website approval.
                     </p>
                     <div v-if="!mfaEnabled" class="notice warning">
                         Enable your authenticator in
@@ -114,7 +141,7 @@ async function copyToken() {
                         v-else
                         @submit.prevent="
                             form.post('/automation', {
-                                preserveScroll: true,
+                                preserveScroll: 'errors',
                                 onFinish: () => form.reset('password'),
                             })
                         "
@@ -129,28 +156,37 @@ async function copyToken() {
                                 required
                             />
                         </div>
-                        <div class="field">
-                            <label for="grant-target">Deployment target</label
-                            ><select
-                                id="grant-target"
-                                v-model="form.environment_id"
-                                required
-                            >
-                                <option
+                        <fieldset class="field target-selection">
+                            <legend>Deployment targets</legend>
+                            <p id="grant-target-help" class="muted">
+                                Select 1–100 targets. New projects are not added
+                                automatically. Create a new token to change this
+                                selection.
+                            </p>
+                            <div class="target-options">
+                                <label
                                     v-for="target in targets"
                                     :key="target.id"
-                                    :value="target.id"
+                                    class="check target-option"
                                 >
-                                    {{ target.project }} / {{ target.name }} ·
-                                    {{ target.branch }}
-                                    {{
-                                        target.requires_approval
-                                            ? "· Independent approval"
-                                            : ""
-                                    }}
-                                </option>
-                            </select>
-                        </div>
+                                    <input
+                                        v-model="form.environment_ids"
+                                        type="checkbox"
+                                        :value="target.id"
+                                        :disabled="form.processing"
+                                        aria-describedby="grant-target-help"
+                                    />
+                                    <span>
+                                        {{ target.project }} /
+                                        {{ target.name }} ·
+                                        {{ target.branch }}
+                                    </span>
+                                </label>
+                            </div>
+                            <span class="muted" role="status">
+                                {{ form.environment_ids.length }} selected
+                            </span>
+                        </fieldset>
                         <div class="field">
                             <label for="grant-days">Valid for (days)</label
                             ><input
@@ -176,7 +212,11 @@ async function copyToken() {
                         <div class="form-actions">
                             <button
                                 class="btn primary"
-                                :disabled="form.processing"
+                                :disabled="
+                                    form.processing ||
+                                    !form.environment_ids.length ||
+                                    form.environment_ids.length > 100
+                                "
                             >
                                 Create deployment token
                             </button>
@@ -195,10 +235,10 @@ async function copyToken() {
                     </p>
                     <pre class="log connection-config">{{ connection }}</pre>
                     <p class="muted">
-                        After connecting, ask Codex to list the target, push
-                        your changes, and deploy the exact commit to the
-                        authorized target. Deployment logs remain available in
-                        DeployHub.
+                        After connecting, ask Codex to list the targets, select
+                        the intended project, push your changes, and deploy the
+                        exact commit to the authorized target. Deployment logs
+                        remain available in DeployHub.
                     </p>
                 </div>
             </section>
@@ -210,10 +250,12 @@ async function copyToken() {
             </div>
             <div class="card-content">
                 <p class="muted">
-                    Changing your password, resetting MFA, losing deployment
-                    access or changing the target repository, branch or server
-                    invalidates the token. Revocation stops further steps after
-                    any current command finishes.
+                    Changing your password, resetting MFA or revoking the token
+                    stops access to all selected targets. Losing deployment
+                    access or changing a target's repository, branch or server
+                    invalidates that target's authorization. Other valid targets
+                    remain usable. Revocation stops further steps after any
+                    current command finishes.
                 </p>
                 <p v-if="!grants.length" class="muted">
                     No automation tokens created.
@@ -222,7 +264,7 @@ async function copyToken() {
                     <table v-responsive-table>
                         <thead>
                             <tr>
-                                <th>Name / target</th>
+                                <th>Name / targets</th>
                                 <th>Expires</th>
                                 <th>Status</th>
                                 <th>Action</th>
@@ -232,7 +274,14 @@ async function copyToken() {
                             <tr v-for="grant in grants" :key="grant.id">
                                 <td>
                                     {{ grant.name }}
-                                    <div class="muted">{{ grant.target }}</div>
+                                    <ul class="muted token-targets">
+                                        <li
+                                            v-for="target in grant.targets"
+                                            :key="target.id"
+                                        >
+                                            {{ target.label }}
+                                        </li>
+                                    </ul>
                                 </td>
                                 <td>
                                     {{
@@ -279,6 +328,33 @@ async function copyToken() {
 <style scoped>
 .connection-config {
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.target-selection {
+    min-width: 0;
+    border: 0;
+    padding: 0;
+}
+.target-options {
+    display: grid;
+    gap: 10px;
+    max-height: 280px;
+    overflow-y: auto;
+    margin: 12px 0;
+}
+.target-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    overflow-wrap: anywhere;
+}
+.target-option input {
+    flex-shrink: 0;
+    margin-top: 3px;
+}
+.token-targets {
+    margin: 6px 0 0;
+    padding-left: 18px;
     overflow-wrap: anywhere;
 }
 </style>

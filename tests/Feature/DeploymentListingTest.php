@@ -33,8 +33,8 @@ class DeploymentListingTest extends TestCase
         $pending = $this->candidate();
         $pending->update(['state' => 'awaiting_approval']);
         $this->newerCopies($pending, 50);
-        $this->actingAs($this->owner)->get('/approvals')->assertInertia(fn (Assert $page) => $page
-            ->component('Hub/Index')->where('stats.approvals', 1)->where('deployments.total', 1)
+        $this->actingAs($this->owner)->get('/activity?state=awaiting_approval')->assertInertia(fn (Assert $page) => $page
+            ->component('Hub/Index')->missing('stats.approvals')->where('deployments.total', 1)
             ->has('deployments.data', 1)->where('deployments.data.0.id', $pending->id));
     }
 
@@ -90,8 +90,8 @@ class DeploymentListingTest extends TestCase
         $pending = $this->candidate();
         $pending->update(['state' => 'awaiting_approval']);
         $this->travel(61)->minutes();
-        $this->actingAs($this->owner)->get('/approvals')->assertInertia(fn (Assert $page) => $page
-            ->where('stats.approvals', 0)->where('deployments.total', 0)->has('deployments.data', 0));
+        $this->actingAs($this->owner)->get('/environments/'.$this->environment->id)->assertInertia(fn (Assert $page) => $page
+            ->where('deployments.total', 0)->has('deployments.data', 0));
     }
 
     public function test_activity_and_environment_history_offer_older_pages(): void
@@ -177,8 +177,8 @@ class DeploymentListingTest extends TestCase
     {
         $pending = $this->candidate();
         $pending->update(['state' => 'awaiting_approval']);
-        $this->actingAs($this->member('developer', false))->get('/approvals')->assertInertia(fn (Assert $page) => $page
-            ->where('stats.approvals', 0)->where('deployments.total', 0));
+        $this->actingAs($this->member('developer', false))->get('/activity?state=awaiting_approval')->assertInertia(fn (Assert $page) => $page
+            ->where('deployments.total', 0));
     }
 
     public function test_search_treats_zero_and_sql_wildcards_as_literal_text(): void

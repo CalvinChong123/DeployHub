@@ -11,10 +11,10 @@ class ListDeploymentTargets extends DeploymentTool
 {
     protected string $name = 'list_deployment_targets';
 
-    protected string $description = 'List the deployment target authorized by this token, including the configured repository, branch and independent approval requirements. Does not contact the server.';
+    protected string $description = 'List the currently usable deployment targets explicitly authorized by this token, including each configured repository and branch. Select the intended target before preparing. Does not contact deployment servers.';
 
     public function handle(AutomationDeployments $deployments): Response
     {
-        return $this->result(fn () => ['targets' => [$deployments->target()]]);
+        return $this->result(fn () => ['targets' => $deployments->targets()]);
     }
 }

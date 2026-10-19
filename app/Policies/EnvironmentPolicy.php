@@ -20,11 +20,6 @@ class EnvironmentPolicy
         return $this->access->environment($user, $environment, 'deploy');
     }
 
-    public function approve(User $user, Environment $environment): bool
-    {
-        return $this->access->environment($user, $environment, 'approve');
-    }
-
     public function manage(User $user, Environment $environment): bool
     {
         return $this->access->environment($user, $environment, 'manage');

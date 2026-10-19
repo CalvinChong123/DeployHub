@@ -13,7 +13,7 @@ class ExecuteDeployment extends DeploymentTool
 {
     protected string $name = 'execute_deployment';
 
-    protected string $description = 'Confirm the exact preview after reviewing prepare_deployment output and the user has requested deployment. Unprotected targets enter the queue without website confirmation; production and protected targets await independent approval. Neither queued nor awaiting_approval means success. Retries never start another run.';
+    protected string $description = 'Confirm the exact preview after reviewing prepare_deployment output and the user has requested deployment. All authorized targets, including production, enter the queue after confirmation. Queued does not mean success. Retries never start another run.';
 
     public function schema(JsonSchema $schema): array
     {

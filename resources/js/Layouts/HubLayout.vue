@@ -30,7 +30,6 @@ const navGroups = computed(() => [
             { name: "Overview", url: "/dashboard", icon: "◈" },
             { name: "Projects", url: "/projects", icon: "▤" },
             { name: "Deployment activity", url: "/activity", icon: "↗" },
-            { name: "Approvals", url: "/approvals", icon: "✓" },
         ],
     },
     {

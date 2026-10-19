@@ -44,7 +44,7 @@ class DeploymentScheduler
                         return null;
                     }
                     if ($deployment->state !== 'scheduled' || $deployment->expires_at->isPast()) {
-                        $reason = $deployment->state === 'scheduled' ? 'Scheduled execution window expired.' : 'Scheduled time passed without confirmation and independent approval.';
+                        $reason = $deployment->state === 'scheduled' ? 'Scheduled execution window expired.' : 'Scheduled time passed without requester confirmation.';
                         $deployment->update(['state' => 'expired', 'error' => $reason, 'finished_at' => now(), 'active_environment_id' => null]);
                         Audit::record($deployment->environment->project->workspace_id, null, 'deployment.schedule_expired', 'deployment:'.$deployment->id);
 
@@ -52,7 +52,6 @@ class DeploymentScheduler
                     }
                     try {
                         $this->candidates->validate($deployment);
-                        $this->candidates->validateApproval($deployment);
                     } catch (DeploymentException $error) {
                         $deployment->update(['state' => 'failed', 'error' => $this->sanitizer->clean($error->getMessage()), 'finished_at' => now(), 'active_environment_id' => null]);
                         Audit::record($deployment->environment->project->workspace_id, null, 'deployment.schedule_failed', 'deployment:'.$deployment->id);

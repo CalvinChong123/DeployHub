@@ -13,10 +13,10 @@ Controller props and typed Vue pages form one contract. Deployment detail receiv
 ## Decisions
 
 - Update controller props, `hub-types.ts` and every consuming component together when changing response shape. Keep form validation errors and flash failures visible at the action that caused them.
-- Filter approvals, expiry, search and deployment state on the server before pagination. Keep navigation to older records and preserve filter query parameters; never infer an empty approval list from a truncated all-state history.
+- Filter expiry, search and deployment state on the server before pagination. Keep navigation to older records and preserve filter query parameters. Approval navigation and actions are retired; preserve historical records and show explicit requester reconfirmation for legacy awaiting_approval requests.
 - Preserve environment tabs and scroll during pagination. Reset to the first page when filters change, and clear debounce/poll timers on unmount.
 - Base state-dependent buttons on the current polled deployment state and code-update status, while server authorization remains decisive. Check actions that become available after queued/running transitions to failure.
-- Display fresh recovery provenance, replayed steps and independent approval requirements before confirmation. Do not imply that recovery reuses the old approval or rolls back code.
+- Display fresh recovery provenance and replayed steps before requester confirmation. Production recovery uses the same confirmation flow without independent approval. Do not imply that recovery rolls back code.
 - Show affected members and an explicit choice before a server change expands their access. Reflect the same boundary and validation condition in the backend.
 
 ## Verification

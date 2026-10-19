@@ -37,11 +37,7 @@ class HubController extends Controller
         if ($section !== 'activity') {
             $deployments->withoutExpiredCandidates();
         }
-        if ($section === 'approvals') {
-            $deployments->where('state', 'awaiting_approval')->where('expires_at', '>', now())
-                ->where(fn ($query) => $query->whereNull('scheduled_for')->orWhere('scheduled_for', '>', now()));
-        }
-        if (in_array($section, ['activity', 'approvals'], true)) {
+        if ($section === 'activity') {
             if (($filters['state'] ?? 'all') !== 'all') {
                 $deployments->where('state', $filters['state']);
             }
@@ -61,9 +57,7 @@ class HubController extends Controller
             'worker' => app(WorkerHealth::class)->status(),
             'stats' => ['projects' => $projects->count(), 'environments' => $ids->count(), 'deployments' => Deployment::whereIn('environment_id', $ids)->where('created_at', '>=', now()->subDays(30))->count(),
                 'failed' => Deployment::whereIn('environment_id', $ids)->where('state', 'failed')->where('created_at', '>=', now()->subDays(30))->count(),
-                'scheduled' => Deployment::whereIn('environment_id', $ids)->where('state', 'scheduled')->where('expires_at', '>', now())->count(),
-                'approvals' => Deployment::whereIn('environment_id', $ids)->where('state', 'awaiting_approval')->where('expires_at', '>', now())
-                    ->where(fn ($query) => $query->whereNull('scheduled_for')->orWhere('scheduled_for', '>', now()))->count()]]);
+                'scheduled' => Deployment::whereIn('environment_id', $ids)->where('state', 'scheduled')->where('expires_at', '>', now())->count()]]);
     }
 
     public function environment(Request $request, Environment $environment, Access $access)

@@ -30,22 +30,21 @@ class DeploymentConfirmation
                     return $deployment;
                 }
             }
-            if (in_array($deployment->state, ['queued', 'running', 'awaiting_approval', 'scheduled'], true)) {
+            if (in_array($deployment->state, ['queued', 'running', 'scheduled'], true)) {
                 return $deployment;
             }
-            if ($deployment->state !== 'awaiting_confirmation') {
+            if (! in_array($deployment->state, ['awaiting_confirmation', 'awaiting_approval'], true)) {
                 throw new DeploymentException('This candidate cannot be confirmed again. Create a fresh preview.');
             }
             $this->candidates->validate($deployment);
-            if (! $deployment->scheduled_for && Deployment::where('active_environment_id', $deployment->environment_id)->exists()) {
+            if (! $deployment->scheduled_for && Deployment::where('active_environment_id', $deployment->environment_id)->whereKeyNot($deployment->id)->exists()) {
                 throw new DeploymentException('Another active deployment reserves this environment.');
             }
-            $requires = $deployment->candidate['requires_approval'] || $deployment->candidate['production'];
-            $deployment->update(['state' => $requires ? 'awaiting_approval' : ($deployment->scheduled_for ? 'scheduled' : 'queued'),
+            $deployment->update(['state' => $deployment->scheduled_for ? 'scheduled' : 'queued',
                 'active_environment_id' => $deployment->scheduled_for ? null : $deployment->environment_id]);
             Audit::record($deployment->environment->project->workspace_id, $actor->id, 'deployment.confirmed', 'deployment:'.$deployment->id,
                 ['digest' => $deployment->digest, 'automation_grant_id' => $deployment->candidate['automation_grant_id'] ?? null]);
-            if (! $requires && ! $deployment->scheduled_for) {
+            if (! $deployment->scheduled_for) {
                 ExecuteDeployment::dispatch($deployment->id)->onConnection('database')->beforeCommit();
             }
 

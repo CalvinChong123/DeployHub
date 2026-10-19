@@ -133,7 +133,7 @@ class DeploymentHooksTest extends TestCase
         }
     }
 
-    public function test_changed_scripts_and_missing_production_approval_block_worker_before_connection(): void
+    public function test_changed_scripts_block_worker_but_production_needs_no_approval(): void
     {
         $this->environment->update(['hooks' => [$this->hook('echo old')]]);
         $d = $this->candidate();
@@ -146,8 +146,9 @@ class DeploymentHooksTest extends TestCase
         $next = $this->candidate();
         $this->remote->commands = [];
         $this->execute($next);
-        $this->assertSame('failed', $next->fresh()->state);
-        $this->assertCount(0, $this->remote->commands);
+        $this->assertSame('succeeded', $next->fresh()->state);
+        $this->assertNotEmpty($this->remote->commands);
+        $this->assertNull($next->approval);
     }
 
     public function test_hook_connection_loss_and_pre_head_change_quarantine_environment(): void

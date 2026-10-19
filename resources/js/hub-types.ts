@@ -3,12 +3,11 @@ export type AutomationTarget = {
     name: string;
     project: string;
     branch: string;
-    requires_approval: boolean;
 };
 export type AutomationGrantSummary = {
     id: number;
     name: string;
-    target: string;
+    targets: { id: number; label: string }[];
     expires_at: string;
     revoked_at: string | null;
     expired: boolean;
@@ -69,7 +68,6 @@ export type Environment = {
     path: string;
     branch: string;
     production: boolean;
-    requires_approval: boolean;
     pipeline: string[];
     hooks?: DeploymentHook[] | null;
     pipeline_version: number;
@@ -100,7 +98,6 @@ export type Permission = {
     user_id: number;
     can_view: boolean;
     can_deploy: boolean;
-    can_approve: boolean;
 };
 export type DeploymentSummary = {
     id: number;
@@ -131,7 +128,6 @@ export type Deployment = {
         path: string;
         branch: string;
         production: boolean;
-        requires_approval: boolean;
         recovery_of?: number;
         scheduled_for?: string;
         schedule_timezone?: string;

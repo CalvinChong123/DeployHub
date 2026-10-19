@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\ExecuteDeployment;
 use App\Models\Deployment;
 use App\Models\EnvironmentPermission;
 use App\Services\Deployment\CandidateService;
@@ -62,7 +63,7 @@ class PipelineRecoveryTest extends TestCase
         $this->assertNull($recovery->fresh()->active_environment_id);
     }
 
-    public function test_production_recovery_requires_new_independent_approval(): void
+    public function test_production_recovery_requires_requester_confirmation_without_approval(): void
     {
         $this->environment->update(['production' => true, 'requires_approval' => true]);
         $source = $this->candidate();
@@ -76,14 +77,12 @@ class PipelineRecoveryTest extends TestCase
         $source->refresh();
         $recovery = app(CandidateService::class)->recover($source, $this->owner, (string) Str::uuid());
         $this->actingAs($this->owner)->post('/deployments/'.$recovery->id.'/confirm', ['digest' => $recovery->digest, 'reviewed' => true])->assertSessionMissing('error');
-        $this->assertSame('awaiting_approval', $recovery->fresh()->state);
-        Queue::assertNothingPushed();
-        $this->post('/deployments/'.$recovery->id.'/approve', ['digest' => $recovery->digest, 'reviewed' => true])->assertForbidden();
+        $this->assertSame('queued', $recovery->fresh()->state);
+        Queue::assertPushed(ExecuteDeployment::class, 1);
         $this->assertNull($recovery->approval);
-        $this->actingAs($approver)->post('/deployments/'.$recovery->id.'/approve', ['digest' => $recovery->digest, 'reviewed' => true])->assertSessionMissing('error');
         app(DeploymentExecutor::class)->execute($recovery->id);
         $this->assertSame('succeeded', $recovery->fresh()->state);
-        $this->assertDatabaseCount('deployment_approvals', 2);
+        $this->assertDatabaseCount('deployment_approvals', 1);
     }
 
     public function test_recovery_rechecks_permission_and_mfa(): void

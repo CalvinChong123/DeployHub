@@ -74,22 +74,17 @@ class DeployHubExecutionTest extends TestCase
         $this->assertNull($d->fresh()->active_environment_id);
     }
 
-    public function test_credential_rotation_and_expired_approval_block_execution(): void
+    public function test_credential_rotation_blocks_execution_including_production(): void
     {
-        $d = $this->candidate();
-        $this->queue($d);
-        $this->environment->server->increment('credential_version');
-        app(DeploymentExecutor::class)->execute($d->id);
-        $this->assertSame('failed', $d->fresh()->state);
-        $this->environment->update(['production' => true]);
-        $next = $this->candidate();
-        $this->queue($next);
-        $approver = $this->member();
-        $this->actingAs($approver)->post('/deployments/'.$next->id.'/approve', ['digest' => $next->digest, 'reviewed' => true]);
-        $next->approval()->update(['expires_at' => now()->subSecond()]);
-        app(DeploymentExecutor::class)->execute($next->id);
-        $this->assertSame('failed', $next->fresh()->state);
-        $this->assertSame($next->starting_sha, $this->remote->head);
+        foreach ([false, true] as $production) {
+            $this->environment->update(['production' => $production]);
+            $d = $this->candidate();
+            $this->queue($d);
+            $this->environment->server->increment('credential_version');
+            app(DeploymentExecutor::class)->execute($d->id);
+            $this->assertSame('failed', $d->fresh()->state);
+            $this->assertSame($d->starting_sha, $this->remote->head);
+        }
     }
 
     public function test_confirm_requires_explicit_review_and_digest(): void
@@ -258,51 +253,49 @@ class DeployHubExecutionTest extends TestCase
         $this->assertSame('unknown', $d->steps()->where('type', 'fast_forward')->first()->state);
     }
 
-    public function test_production_requires_independent_exact_candidate_approval(): void
+    public function test_production_confirms_and_executes_without_independent_approval(): void
     {
         $this->environment->update(['production' => true, 'requires_approval' => true]);
         $d = $this->candidate();
         $this->queue($d);
-        $this->assertSame('awaiting_approval', $d->fresh()->state);
-        Queue::assertNothingPushed();
-        $this->actingAs($this->owner)->post('/deployments/'.$d->id.'/approve', ['digest' => $d->digest, 'reviewed' => true])->assertForbidden();
-        $approver = $this->member();
-        $this->actingAs($approver)->post('/deployments/'.$d->id.'/approve', ['digest' => str_repeat('0', 64), 'reviewed' => true])->assertSessionHas('error');
-        $this->post('/deployments/'.$d->id.'/approve', ['digest' => $d->digest, 'reviewed' => true])->assertSessionMissing('error');
+        $this->queue($d);
+        $this->assertSame('queued', $d->fresh()->state);
+        $this->assertNull($d->approval);
         Queue::assertPushed(ExecuteDeployment::class, 1);
         app(DeploymentExecutor::class)->execute($d->id);
         $this->assertSame('succeeded', $d->fresh()->state);
     }
 
-    public function test_directly_queued_production_job_without_approval_cannot_execute(): void
+    public function test_production_worker_still_requires_current_deployment_permission(): void
     {
         $this->environment->update(['production' => true]);
         $d = $this->candidate();
-        $d->update(['state' => 'queued', 'active_environment_id' => $this->environment->id]);
+        $this->queue($d);
+        EnvironmentPermission::where('environment_id', $this->environment->id)->where('user_id', $this->owner->id)->update(['can_deploy' => false]);
         app(DeploymentExecutor::class)->execute($d->id);
         $this->assertSame('failed', $d->fresh()->state);
         $this->assertSame($d->starting_sha, $this->remote->head);
     }
 
-    public function test_approver_revocation_after_approval_stops_job(): void
+    public function test_legacy_approval_records_do_not_gate_production_execution(): void
     {
         $this->environment->update(['production' => true]);
         $d = $this->candidate();
-        $this->queue($d);
         $approver = $this->member();
-        $this->actingAs($approver)->post('/deployments/'.$d->id.'/approve', ['digest' => $d->digest, 'reviewed' => true]);
+        $d->approval()->create(['user_id' => $approver->id, 'digest' => $d->digest, 'outcome' => 'approved', 'expires_at' => now()->subMinute()]);
         $this->workspace->users()->updateExistingPivot($approver->id, ['active' => false]);
+        $this->queue($d);
         app(DeploymentExecutor::class)->execute($d->id);
-        $this->assertSame('failed', $d->fresh()->state);
-        $this->assertSame($d->starting_sha, $this->remote->head);
+        $this->assertSame('succeeded', $d->fresh()->state);
+        $this->assertSame($d->target_sha, $this->remote->head);
+        $this->assertDatabaseCount('deployment_approvals', 1);
     }
 
     public function test_rejected_or_expired_candidate_never_runs(): void
     {
         $this->environment->update(['production' => true]);
         $d = $this->candidate();
-        $this->queue($d);
-        $this->actingAs($this->member())->post('/deployments/'.$d->id.'/reject', ['reason' => 'Needs review']);
+        $d->update(['state' => 'rejected']);
         app(DeploymentExecutor::class)->execute($d->id);
         $this->assertSame('rejected', $d->fresh()->state);
         $this->assertNull($d->fresh()->active_environment_id);
@@ -312,7 +305,7 @@ class DeployHubExecutionTest extends TestCase
         $this->artisan('deployhub:reconcile')->assertSuccessful();
         app(DeploymentExecutor::class)->execute($next->id);
         $this->assertSame('expired', $next->fresh()->state);
-        Queue::assertNothingPushed();
+        Queue::assertPushed(ExecuteDeployment::class, 1);
     }
 
     public function test_worker_crash_becomes_unknown_and_keeps_reservation(): void

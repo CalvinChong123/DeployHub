@@ -24,7 +24,7 @@
 
 ## 2. 先注册一台 SSH 服务器
 
-如果项目和服务器已经配置好，想让 Codex 代为部署，可以在 **Account security → AI deployment access** 创建一个绑定指定部署目标的 token。创建时需要完成 MFA 并确认当前密码；以后 AI 使用该 token 调用，不需要每次打开网页确认或提供验证码。此功能支持所有已授权目标，production 和要求审批的目标仍需另一位有权限的成员独立审批。完整操作见本教程末尾的 AI 部署说明。
+如果项目和服务器已经配置好，想让 Codex 代为部署，可以在 **Account security → AI deployment access** 创建一个绑定指定部署目标的 token。创建时需要完成 MFA 并确认当前密码；以后 AI 使用该 token 调用，不需要每次打开网页确认或提供验证码。此功能支持所有已授权目标，包括 production；AI 确认审阅请求后即可进入部署队列，无需另一位成员审批。完整操作见本教程末尾的 AI 部署说明。
 
 DeployHub 管理服务器上已经存在的 Git 项目。添加项目之前，需要有一台可通过 SSH 访问的部署服务器，并在其目标目录中准备好 Git checkout、应用配置及所需运行环境。
 
@@ -69,7 +69,6 @@ DeployHub 连接服务器使用的 SSH 私钥，与服务器访问 Git 仓库的
 | Absolute remote repository directory | `/home/deploy/my-app`，服务器上已有 Git 仓库的根目录 |
 | Fixed Git branch | `staging` 或你实际部署的分支；服务器 checkout 应处于该分支 |
 | This is a production environment | 仅实际生产环境勾选 |
-| Require independent approval | 勾选后需要其他有权限的成员审批；生产环境始终要求审批 |
 
 服务器目录中的 `git remote get-url origin` 可用于核对 Exact origin URL。HTTPS 与 SSH 地址即使指向同一个仓库，也不算完全一致。
 
@@ -105,7 +104,7 @@ rm -f -- public/error_log
 
 已有同一 Project 下的多个 Environment 会拆成独立项目，保留各环境配置、成员权限、部署 ID 与日志；名称会带上环境标签，便于区分。
 
-**Project settings → Delete project** 仅移除当前项目登记，其他项目不受影响，远程文件不删除。历史仍可在 **Deployment activity** 查看。已占用目标的即时审批、排队、执行或状态 Unknown 的部署需先完成、取消或核对状态；仓库操作进行中也不能删除。尚未占用目标的定时计划会随登记删除而失效，保留历史。删除后可重新登记同一服务器目录。修改 SSH server 时仍需确认向缺少新服务器权限的现有成员授权；成员原有权限保留。
+**Project settings → Delete project** 仅移除当前项目登记，其他项目不受影响，远程文件不删除。历史仍可在 **Deployment activity** 查看。已占用目标的旧待审批请求、排队、执行或状态 Unknown 的部署需先完成、取消或核对状态；仓库操作进行中也不能删除。尚未占用目标的定时计划会随登记删除而失效，保留历史。删除后可重新登记同一服务器目录。修改 SSH server 时仍需确认向缺少新服务器权限的现有成员授权；成员原有权限保留。
 
 
 ## 4. 检查仓库，再审阅部署
@@ -117,25 +116,25 @@ rm -f -- public/error_log
 3. 有代码更新或需要执行已启用的 Hook 时，点击 **Prepare deployment →**。刚才成功的预检在两分钟内、配置不变时直接复用，不会再次等待 SSH。无需每次先点击 Check repository；没有有效预检时会自动检查。有启用 Hook 时，即使代码已是最新也可执行。
 4. 核对服务器环境、目录、分支、起始 commit、目标 commit、待发布提交、工作区改动和 Hook 脚本。脚本按 Pre/Post 分组并默认收起，点击名称展开查看。
 5. 在 **Deployment timing** 默认选择 **Deploy now**；若希望定时部署，选择 **Schedule** 并填写日期时间。更改时间会取消审阅勾选，需要重新核对后勾选。
-6. 勾选 **I reviewed the commit, target, enabled workflow, local changes and deployment timing.**。无审批要求的环境点击 **Deploy now** 或 **Schedule deployment**；需要审批的环境点击 **Request independent approval**。
+6. 勾选 **I reviewed the commit, target, enabled workflow, local changes and deployment timing.**。所有环境（包括 production）点击 **Deploy now** 或 **Schedule deployment**，无需独立审批。
 
-项目列表显示最近一次已进入确认／审批流程的部署结果，以及上次检查的待发布数量。项目首页的 **Last successful deployment** 是历史成功记录；如果后来的部署更新了代码再失败，它不能代表现在运行的版本。**Incoming · last check** 和展开后的 **Last inspected HEAD / fetched origin** 都是上次检查结果。新项目未检查时显示 Not checked，可直接点击 Prepare deployment 自动检查。
+项目列表显示最近一次已确认的部署结果或仍有效的历史待处理请求，以及上次检查的待发布数量。项目首页的 **Last successful deployment** 是历史成功记录；如果后来的部署更新了代码再失败，它不能代表现在运行的版本。**Incoming · last check** 和展开后的 **Last inspected HEAD / fetched origin** 都是上次检查结果。新项目未检查时显示 Not checked，可直接点击 Prepare deployment 自动检查。
 
-审阅页在桌面左侧显示 commit、已启用 workflow 和待发布提交，右侧确认立即或定时部署；手机上纵向排列，顶部 **Review & confirm ↓** 可直接跳到确认区。展开 **Commit, path & approval details** 核对完整 SHA、目录和审批信息，展开 **Full execution order** 查看所有步骤顺序。
+审阅页在桌面左侧显示 commit、已启用 workflow 和待发布提交，右侧确认立即或定时部署；手机上纵向排列，顶部 **Review & confirm ↓** 可直接跳到确认区。展开 **Commit & path details** 核对完整 SHA、目录和历史审批信息，展开 **Full execution order** 查看所有步骤顺序。
 
 预检已合并远程命令，普通检查只需要两次 SSH 命令调用；启用 Pre 时会额外批量核对本地文件内容。页面显示本次检查耗时。正式部署始终重新 fetch 并验证审阅的 commit，Pre Hook 后只重新检查仓库身份和 commit，不重复 fetch / 提交列表。真实耗时仍取决于主机登录与仓库 fetch。审阅页面固定本次发布的确切 commit，不会自动替换成后来推送的最新 commit。候选请求有一小时有效期；过期后重新创建预览。
 
 预检失败时核对目录、origin、分支、仓库访问权限和快进历史。本地改动显示为 Local changes，本身不会阻止审阅；会覆盖文件的更新由 Git 拒绝。可保留不冲突的改动，或勾选 Hard reset / 配置 Pre Hook 处理。启用 Pre 后，若审阅的文件内容变化，执行停止并要求新预览。
 
-## 5. 生产审批与成员权限
+## 5. 部署确认与成员权限
 
-生产环境必须由另一位成员审批，发起人不能审批自己的请求。
+所有环境（包括 production）都由有 Deploy 权限的提交人审阅并确认部署。独立审批选项、审批权限和 Approvals 导航已废弃。Production 标记仅用于区分环境，不再要求另一位成员审批。
 
-管理员可在 **Team & access** 创建成员。新成员也要登录并完成验证器绑定，再在对应环境的 **Access** 页面授予 View / Deploy / Approve 权限。Viewer 不能部署或审批；管理员身份也需要具体环境授权。项目创建者自动获得新环境的权限。
+管理员可在 **Team & access** 创建成员。新成员也要登录并完成验证器绑定，再在对应环境的 **Access** 页面授予 View / Deploy 权限。Viewer 不能部署；管理员身份也需要具体环境授权。项目创建者自动获得新环境的权限。
 
-审批人审阅候选请求并点击 **Approve exact candidate** 后，即时部署进入队列；定时部署则等待已选时间。
+提交人点击 **Deploy now** 后，即时部署进入队列；点击 **Schedule deployment** 后，定时部署等待已选时间。旧的 **Awaiting approval** 请求不会自动执行：由原提交人重新审阅并确认；已过期的请求需重新创建预览。旧审批记录作为历史保留，旧 Approvals 链接会跳转到过滤后的 Deployment activity。
 
-**Approvals** 仅显示尚未过期的待审批请求，并提供分页。项目详情的 **Deployments** 和 Dashboard 最近部署隐藏已过期的请求，包括尚未被后台标记为 Expired 的待确认／待审批请求，以及到点仍未确认或审批的定时请求；项目的最近部署摘要也跳过这些请求。有效请求和实际执行结果仍可翻页查看。**Deployment activity** 保留完整的授权历史，可通过搜索和状态筛选追溯过期记录。
+项目详情的 **Deployments** 和 Dashboard 最近部署隐藏已过期的请求，包括尚未被后台标记为 Expired 的待确认／待审批请求，以及到点仍未由提交人确认的定时请求；项目的最近部署摘要也跳过这些请求。有效请求和实际执行结果仍可翻页查看。**Deployment activity** 保留完整的授权历史，可通过搜索和状态筛选追溯过期记录。
 
 ## 6. 让后台任务运行
 
@@ -144,14 +143,14 @@ rm -f -- public/error_log
 1. 打开项目详情，点击 **Prepare deployment →**，进入与立即部署共用的审阅页。
 2. 核对确切 commit、配置与脚本，然后在 **Deployment timing** 选择 **Schedule**，日期时间输入框才会出现。
 3. 选择未来的日期和时间，最多可提前 30 天。页面显示浏览器时区，例如 `Asia/Kuala_Lumpur`；后台按 UTC 保存，不会把本地时间当 UTC。
-4. 核对显示的预约时间，勾选审阅确认，点击 **Schedule deployment**。受保护或生产环境点击 **Request independent approval**，让另一位有权限的成员在预约时间之前审批。
+4. 核对显示的预约时间，勾选审阅确认，点击 **Schedule deployment**。生产环境使用同样的确认流程，无需独立审批。
 5. 状态为 **Scheduled** 后等待到点。计划和预约时间显示在已有的 **Deployments** 历史及 **Deployment activity** 中；点击部署 ID 可查看或取消。没有独立的 Schedule 页面或模块。
 
 选择时间不会再进行一轮 SSH 预检，仍使用刚才审阅的 commit 和脚本。后台保存包含时间的新审阅请求，原预览在历史中标记为 Cancelled；只有新请求等待执行，不会重复运行原预览。若改变主意，在提交前切回 **Deploy now** 即可，日期时间不会随立即部署提交。
 
 这是一次性计划，发布现在审阅的 commit。等待期间不锁住项目；到点前若配置、凭据、权限、起始 commit 或分支目标改变，计划会停止并说明原因，需要重新审阅。不会自动采用后来推送的最新 commit。
 
-调度器每分钟检查一次，所以可能比选择的时间晚几十秒；有其他部署占用目标时也会等待。完整确认和审批的计划允许在预约时间后的一小时内开始执行，包括本机短暂离线后恢复；超过一小时会过期。到点仍未确认或审批的计划会过期。当前不支持每天重复的计划。
+调度器每分钟检查一次，所以可能比选择的时间晚几十秒；有其他部署占用目标时也会等待。已确认的计划允许在预约时间后的一小时内开始执行，包括本机短暂离线后恢复；超过一小时会过期。到点仍未确认的计划会过期。当前不支持每天重复的计划。
 
 ### 保持后台运行
 
@@ -189,14 +188,14 @@ php artisan schedule:work
 | Test authentication 按钮禁用 | 先 Discover fingerprint，再选择首次信任或独立核对并保存 |
 | SSH 登录失败 | 核对主机、端口、账号、私钥、公钥授权和指纹验证 |
 | SSH 成功但 preflight 失败 | 核对 Git 目录、origin、分支、工作区和服务器访问仓库的权限 |
-| Awaiting approval | 由另一位有该环境审批权限且已启用 MFA 的成员审阅 |
+| Awaiting approval（旧记录） | 独立审批已废弃；原提交人重新审阅并确认，有效期已过则创建新预览 |
 | Environment, credentials or pipeline changed | 曾有 MySQL JSON 字段顺序造成误判的问题，已修复。现在只有实际配置变化或完整性验证失败才拒绝；实际变化会列出字段，修改过配置时重新生成预览。 |
 | Queued 长时间不动 | 检查本机数据库队列 worker |
 | Scheduled 到点仍未执行 | 检查 scheduler 心跳、`schedule:work` 与 worker；其他部署可能占用目标。打开部署记录查看是否已过期或因配置、权限、仓库状态变化而失败。 |
 | Failed | 查看失败步骤及之前已执行步骤，检查目标应用；系统不会自动回滚 |
 | Unknown | 按 Operations 文档检查远程进程与应用状态，再进行管理员 reconciliation |
 
-如果部署已更新代码，但后续流水线步骤失败，先检查已完成步骤并解决故障，再在失败部署详情点击 **Prepare recovery preview**。恢复请求会重新检查仓库，并要求当前 HEAD 和获取到的 origin 都等于失败部署的目标 commit；它不会执行 Git merge，而会从头重跑所选流水线步骤以及所有已启用的 Pre/Post Hook。需要重新审阅与确认，生产或受保护环境还需要另一位成员重新审批。若 origin 已前进，请审阅普通的新部署。Unknown 状态不能直接使用此恢复流程，系统也不会自动回滚代码或数据。
+如果部署已更新代码，但后续流水线步骤失败，先检查已完成步骤并解决故障，再在失败部署详情点击 **Prepare recovery preview**。恢复请求会重新检查仓库，并要求当前 HEAD 和获取到的 origin 都等于失败部署的目标 commit；它不会执行 Git merge，而会从头重跑所选流水线步骤以及所有已启用的 Pre/Post Hook。需要提交人重新审阅与确认，生产环境也无需独立审批。若 origin 已前进，请审阅普通的新部署。Unknown 状态不能直接使用此恢复流程，系统也不会自动回滚代码或数据。
 
 失去验证器时，本机管理员可以运行下面的恢复命令。该命令要求交互确认，会清除 MFA 设置并撤销该账号的数据库会话；再次登录后需要重新绑定验证器。
 
@@ -209,11 +208,17 @@ php artisan deployhub:reset-mfa owner@deployhub.test --reason="Identity verified
 ## 8. 让 Codex 代为部署
 
 1. 登录 DeployHub 并完成验证器验证，在 **Account security** 点击 **AI deployment access**。
-2. 选择已授予你部署权限的目标，填写 token 名称、有效天数和当前登录密码，点击 **Create deployment token**。每个 token 绑定一个明确的目标，支持 staging、production 及其他已注册目标。
-3. 复制仅显示一次的 token，按页面的 **Connect Codex** 配置，将其保存在运行 Codex 的电脑上的 `DEPLOYHUB_AI_TOKEN` 环境变量中，再重启 Codex。不要把 token 发在聊天中或提交到 Git。Windows 的安全输入命令和完整配置见 [AI_DEPLOYMENTS.md](AI_DEPLOYMENTS.md)。
+2. 明确勾选当前 workspace 内已授予你部署权限的 1–100 个目标，填写 token 名称、有效天数和当前登录密码，点击 **Create deployment token**。一个 token 可以授权多个项目，支持 staging、production 及其他已注册目标；默认不会勾选任何目标，任一选择无效会拒绝整个签发请求。
+3. 创建成功后，页面会滚动到 **Copy your new token**，并聚焦 token 输入框。点击 **Copy token**，在离开或刷新页面前保存这段仅显示一次的值。DeployHub 不会自动将它写入文件、环境变量或 Codex 配置；授权记录只保存不可还原的 hash，明文仅临时经会话传给创建后的页面。若没有复制就离开或刷新，请在 **Your automation tokens** 撤销该 token 后重新创建。按页面的 **Connect Codex** 配置，将 token 保存在运行 Codex 的电脑上的 `DEPLOYHUB_AI_TOKEN` 环境变量中，再重启 Codex。不要把 token 发在聊天中或提交到 Git。Windows 的安全输入命令和完整配置见 [AI_DEPLOYMENTS.md](AI_DEPLOYMENTS.md)。
 4. 在 Codex 中说：“检查并提交这些修改，push 到目标分支，然后部署这个 commit，完成后告诉我结果。”AI 会查询目标、预览完整 commit、调用确认并轮询结果，不要求你再打开网页确认普通目标。
-5. production 或配置了独立审批的目标，AI 调用后会显示 **Awaiting approval**，由另一位有审批权限的成员在 DeployHub 审批。现有的申请人与审批人分离规则继续生效。
+5. 所有已授权目标（包括 production）在 AI 确认后进入队列。AI 继续查询状态，直到成功、失败或需要人工处理；Queued 不代表已经执行或成功。
 
 代码必须先 commit 并 push；服务器获取到的目标分支尖端必须与 AI 提交的完整 commit SHA 一致。AI 不会把未提交的本地文件直接上传，也不会悄悄改成另一个最新 commit。**Queued** 只表示已入队，只有 **Succeeded** 才表示流水线完成；运行电脑上的 DeployHub 与 worker 必须保持启动。
 
-在 **Your automation tokens** 可以撤销 token。token 到期、修改密码、重设 MFA、失去部署权限，以及目标仓库、分支、目录、服务器或审批策略改变时，旧 token 会失效，需要重新授权。worker 每一步都会复查；正在执行的单条命令会先结束，然后停止后续步骤，不会自动回滚。
+在 **Your automation tokens** 可以查看签发时选择的目标并撤销整个 token。token 到期、撤销、修改密码、重设 MFA、用户停用或 workspace 成员资格失效时，所有目标都会停止接受此 token。某个目标失去部署权限、被归档，或其仓库、分支、目录、服务器或生产环境标记改变时，该目标会失效，其他仍有效的已选目标可继续使用。AI 查询目标时只会看到当前可用的目标；全部目标不可用时会拒绝该 token。worker 每一步都会复查；正在执行的单条命令会先结束，然后停止后续步骤，不会自动回滚。
+
+一个 token 的目标白名单在签发时确定，新建项目不会自动加入。要扩大或更改范围，请重新完成 MFA 和密码确认后签发新 token。多个项目可共用一个 token 和一个 MCP 连接，也可按用途创建范围更小的 token，使用不同连接名称和环境变量。示例见 [多项目配置](AI_DEPLOYMENTS.md#multiple-projects)。每次部署都要明确选择对应项目和分支；预览、确认和查询结果应始终使用同一连接，新 token 不能读取旧 token 创建的部署记录。开发期统一采用新的目标数组与关联表模型，升级时先执行前向迁移并重新加载 worker；旧字段和旧签发请求格式已移除。
+
+其他 AI 客户端需要支持 **Streamable HTTP** 和 **Bearer token** 认证。连接和密钥配置完成后，可将 [AI 客户端操作指南](MCP_AGENT_GUIDE.md) 交给 AI，按工具发现、目标核对、完整 SHA 预览、确认和状态查询的顺序操作。不同客户端的配置格式不同；当前服务没有 OAuth 授权流程，不能假设只支持 OAuth 的客户端可直接接入。
+
+只检查连接时，调用 `list_deployment_targets` 即可，不会连接目标服务器。`prepare_deployment` 会通过 SSH 检查仓库并 fetch，创建预览。连接失败、token 失效、分支 SHA 不符和 worker 离线的处理方式见 [连接故障排查](AI_DEPLOYMENTS.md#connection-troubleshooting)。

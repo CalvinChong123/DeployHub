@@ -34,7 +34,6 @@ class DeploymentExecutor
             $env = $deployment->environment;
             $step = $this->start($deployment, 'preflight');
             $this->candidates->validate($deployment);
-            $this->candidates->validateApproval($deployment);
             $remote = new HeartbeatConnection($this->connections->connect($env->server), $deployment->id, $executionToken);
             $credential = $env->server->credential;
             $this->knownSecrets = $credential ? [$credential->private_key, $credential->passphrase] : [];
@@ -75,7 +74,6 @@ class DeploymentExecutor
                     throw new DeploymentException('Deployment exceeded its execution budget.');
                 }
                 $this->candidates->validate($deployment);
-                $this->candidates->validateApproval($deployment);
                 $step = $this->start($deployment, $type);
                 if ($type === 'repository_ready') {
                     $state = $this->inspector->verifyAfterHooks($remote, $env);

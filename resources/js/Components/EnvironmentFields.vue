@@ -50,15 +50,6 @@ defineProps<{ form: any; servers: Partial<Server>[] }>();
             <label class="check"
                 ><input v-model="form.production" type="checkbox" />This is a
                 production environment</label
-            ><label class="check"
-                ><input
-                    v-model="form.requires_approval"
-                    type="checkbox"
-                    :disabled="form.production"
-                />Require independent approval
-                <small>{{
-                    form.production ? "(always required in production)" : ""
-                }}</small></label
             >
         </div>
         <DeploymentHooks :form="form" />

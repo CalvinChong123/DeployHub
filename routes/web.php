@@ -19,7 +19,7 @@ Route::middleware(['auth', 'workspace'])->group(function () {
     Route::get('/dashboard', [HubController::class, 'index'])->name('dashboard');
     Route::get('/projects', [HubController::class, 'index'])->name('projects.index');
     Route::get('/activity', [HubController::class, 'index'])->name('activity');
-    Route::get('/approvals', [HubController::class, 'index'])->name('approvals');
+    Route::redirect('/approvals', '/activity?state=awaiting_approval')->name('approvals');
     Route::get('/environments/{environment}', [HubController::class, 'environment'])->name('environments.show');
     Route::post('/environments/{environment}/preflight', [DeploymentController::class, 'preflight'])->middleware(['mfa', 'throttle:10,1'])->name('environments.preflight');
     Route::get('/deployments/{deployment}', [DeploymentController::class, 'show'])->name('deployments.show');
@@ -35,7 +35,7 @@ Route::middleware(['auth', 'workspace'])->group(function () {
     Route::middleware('mfa')->group(function () {
         Route::post('/environments/{environment}/deployment-requests', [DeploymentController::class, 'store'])->middleware('throttle:10,1')->name('deployments.store');
         Route::post('/deployments/{deployment}/recover', [DeploymentController::class, 'recover'])->middleware('throttle:10,1')->name('deployments.recover');
-        foreach (['confirm', 'approve', 'reject', 'cancel', 'reconcile'] as $action) {
+        foreach (['confirm', 'cancel', 'reconcile'] as $action) {
             Route::post('/deployments/{deployment}/'.$action, [DeploymentController::class, $action])->name('deployments.'.$action);
         }
         Route::middleware('admin')->group(function () {

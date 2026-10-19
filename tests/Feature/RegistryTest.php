@@ -25,11 +25,11 @@ class RegistryTest extends TestCase
         return ['name' => 'New app', 'repository' => 'git@example.test:team/new.git', 'description' => 'Fixture', 'environment_name' => 'Production', 'server_id' => $this->environment->server_id, 'path' => '/home/deploy/production', 'branch' => 'main', 'production' => true, 'requires_approval' => false, 'pipeline' => ['health', 'cache_clear'], 'health_url' => 'https://example.test/up'];
     }
 
-    public function test_registry_forces_production_approval_and_normalizes_pipeline_order(): void
+    public function test_registry_retires_production_approval_and_normalizes_pipeline_order(): void
     {
         $this->actingAs($this->owner)->post('/projects', $this->data())->assertSessionHasNoErrors();
         $env = Environment::where('name', 'Production')->firstOrFail();
-        $this->assertTrue($env->requires_approval);
+        $this->assertFalse($env->requires_approval);
         $this->assertSame(['cache_clear', 'health'], $env->pipeline);
         $this->assertTrue(app(Access::class)->environment($this->owner, $env, 'deploy'));
     }

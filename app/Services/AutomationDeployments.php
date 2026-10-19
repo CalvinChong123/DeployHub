@@ -19,28 +19,27 @@ class AutomationDeployments
         return $this->access->validate(request()->attributes->get('automation_grant'));
     }
 
-    public function target(): array
+    public function targets(): array
     {
         $grant = $this->grant();
-        $environment = $grant->environment;
 
-        return ['environment_id' => $environment->id, 'project' => $this->sanitizer->clean($environment->project->name),
+        return $this->access->targets($grant)->map(fn ($environment) => ['environment_id' => $environment->id, 'project' => $this->sanitizer->clean($environment->project->name),
             'environment' => $this->sanitizer->clean($environment->name), 'repository' => $this->sanitizer->clean($environment->project->repository),
             'branch' => $environment->branch, 'server' => $this->sanitizer->clean($environment->server->name),
-            'production' => $environment->production, 'requires_independent_approval' => $environment->production || $environment->requires_approval,
-            'expires_at' => $grant->expires_at->toIso8601String()];
+            'production' => $environment->production, 'requires_independent_approval' => false,
+            'expires_at' => $grant->expires_at->toIso8601String()])->all();
     }
 
     public function prepare(int $environmentId, string $expectedSha, string $key): array
     {
         $grant = $this->grant();
-        $this->access->validate($grant, $environmentId);
+        $grant = $this->access->validate($grant, $environmentId);
         $rateKey = 'automation:prepare:'.$grant->id;
         if (RateLimiter::tooManyAttempts($rateKey, 5)) {
             throw new DeploymentException('Too many preview requests. Retry after one minute using the same idempotency key.');
         }
         RateLimiter::hit($rateKey, 60);
-        $deployment = $this->candidates->create($grant->environment, $grant->user, $key, automationGrant: $grant, expectedTargetSha: $expectedSha);
+        $deployment = $this->candidates->create($grant->environments->find($environmentId), $grant->user, $key, automationGrant: $grant, expectedTargetSha: $expectedSha);
 
         return $this->review($deployment->refresh());
     }
@@ -56,7 +55,7 @@ class AutomationDeployments
             throw new DeploymentException('Candidate digest does not match.');
         }
         // Retrying after a lost response reports the same run, including terminal states.
-        if ($deployment->state !== 'awaiting_confirmation') {
+        if (! in_array($deployment->state, ['awaiting_confirmation', 'awaiting_approval'], true)) {
             return $this->review($deployment);
         }
         $deployment = $this->confirmation->confirm($deployment, $grant->user, $digest);
@@ -79,10 +78,11 @@ class AutomationDeployments
 
     private function deployment(AutomationGrant $grant, int $id): Deployment
     {
-        $deployment = Deployment::where('environment_id', $grant->environment_id)->where('user_id', $grant->user_id)->find($id);
+        $deployment = Deployment::where('user_id', $grant->user_id)->find($id);
         if (! $deployment || ($deployment->candidate['automation_grant_id'] ?? null) !== $grant->id) {
             throw new DeploymentException('Deployment is not available under this automation grant.');
         }
+        $this->access->validate($grant, $deployment->environment_id, $deployment->user_id);
 
         return $deployment;
     }
@@ -91,7 +91,7 @@ class AutomationDeployments
     {
         $data = ['deployment_id' => $deployment->id, 'environment_id' => $deployment->environment_id,
             'state' => $deployment->state, 'starting_sha' => $deployment->starting_sha, 'target_sha' => $deployment->target_sha,
-            'requires_independent_approval' => $deployment->candidate['production'] || $deployment->candidate['requires_approval'],
+            'requires_independent_approval' => false,
             'digest' => $deployment->digest, 'expires_at' => $deployment->expires_at->toIso8601String(),
             'code_updated' => $deployment->code_updated, 'error' => $this->sanitizer->clean($deployment->error ?? ''),
             'review_url' => route('deployments.show', $deployment), 'worker_online' => app(WorkerHealth::class)->status()['online'],
@@ -103,7 +103,7 @@ class AutomationDeployments
         $data['message'] = match ($deployment->state) {
             'awaiting_confirmation' => 'Preview only. Review the frozen workflow, then call execute_deployment with this deployment ID and digest.',
             'queued' => 'Queued; execution has not started. Poll get_deployment_status until a terminal state.',
-            'awaiting_approval' => 'Requested and awaiting an independent authorized approver in DeployHub. This token cannot approve its own request. Execution has not started.',
+            'awaiting_approval' => 'Legacy pending request. Independent approval is retired. Review and call execute_deployment to confirm this exact candidate; it will not execute automatically.',
             'running' => 'Deployment is running. Poll get_deployment_status.',
             'succeeded' => 'Deployment pipeline completed successfully.',
             'unknown' => 'Remote state is uncertain. An administrator must reconcile it; do not automatically retry.',

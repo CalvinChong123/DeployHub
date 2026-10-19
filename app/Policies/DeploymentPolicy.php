@@ -19,9 +19,4 @@ class DeploymentPolicy
     {
         return $user->id === $deployment->user_id && $this->access->environment($user, $deployment->environment, 'deploy');
     }
-
-    public function approve(User $user, Deployment $deployment): bool
-    {
-        return $user->id !== $deployment->user_id && $this->access->environment($user, $deployment->environment, 'approve');
-    }
 }

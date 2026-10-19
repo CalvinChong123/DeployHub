@@ -84,7 +84,7 @@ const renderer = createRenderer({
 const text = (element) =>
     [element.text, ...element.children.map(text)].join(" ");
 
-function mount(responses) {
+function mount(responses, options = {}) {
     const timers = new Map();
     const intervals = new Set();
     const requests = [];
@@ -177,12 +177,12 @@ function mount(responses) {
         },
         user: { name: "Owner" },
         steps: [],
+        ...options.deployment,
     };
     const root = node();
     const app = renderer.createApp(module.exports.default, {
         deployment,
-        canConfirm: true,
-        canApprove: false,
+        canConfirm: options.canConfirm ?? true,
         canRecover: true,
         canReconcile: true,
         workerOnline: true,
@@ -263,4 +263,47 @@ test("a poll failure displays an error, retries, and cleans up on navigation", a
     }
     assert.equal(view.timers.size, 0);
     assert.equal(view.intervals.size, 0);
+});
+
+for (const state of ["awaiting_confirmation", "awaiting_approval"]) {
+    test(`production ${state} renders requester confirmation without approval actions`, () => {
+        const view = mount([], {
+            deployment: {
+                state,
+                candidate: {
+                    pipeline: [],
+                    branch: "main",
+                    pipeline_version: 1,
+                    production: true,
+                    requires_approval: true,
+                },
+            },
+        });
+        try {
+            assert.match(text(view.root), /Confirm deployment/);
+            assert.match(text(view.root), /Deploy now/);
+            assert.doesNotMatch(
+                text(view.root),
+                /Request independent approval|Approve exact candidate|Reject request/,
+            );
+            assert.deepEqual(view.errors, []);
+            assert.deepEqual(view.requests, []);
+        } finally {
+            view.stop();
+        }
+    });
+}
+
+test("a legacy pending request offers no confirmation to another member", () => {
+    const view = mount([], {
+        deployment: { state: "awaiting_approval" },
+        canConfirm: false,
+    });
+    try {
+        assert.match(text(view.root), /Only the requester/);
+        assert.doesNotMatch(text(view.root), /Deploy now|Approve exact candidate/);
+        assert.deepEqual(view.errors, []);
+    } finally {
+        view.stop();
+    }
 });

@@ -8,7 +8,7 @@ class AutomationGrant extends Model
 {
     protected $guarded = [];
 
-    protected $hidden = ['token_hash', 'identity_fingerprint', 'target_fingerprint'];
+    protected $hidden = ['token_hash', 'identity_fingerprint'];
 
     protected function casts(): array
     {
@@ -20,8 +20,9 @@ class AutomationGrant extends Model
         return $this->belongsTo(User::class);
     }
 
-    public function environment()
+    public function environments()
     {
-        return $this->belongsTo(Environment::class)->withTrashed();
+        return $this->belongsToMany(Environment::class, 'automation_grant_targets')->withTrashed()
+            ->using(AutomationGrantTarget::class)->withPivot('target_fingerprint')->orderBy('environments.id');
     }
 }

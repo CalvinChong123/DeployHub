@@ -14,7 +14,6 @@ type ProjectInput = {
     path: string;
     branch: string;
     production: boolean;
-    requires_approval: boolean;
     pipeline: string[];
     hooks: DeploymentHook[];
     health_url: string;
@@ -33,7 +32,6 @@ const form = useForm({
     path: "",
     branch: "staging",
     production: false,
-    requires_approval: false,
     pipeline: [] as string[],
     hooks: props.defaultHooks || ([] as DeploymentHook[]),
     health_url: "",

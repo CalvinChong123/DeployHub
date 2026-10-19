@@ -45,7 +45,7 @@ class Access
         if ($role === 'viewer' && $action !== 'view') {
             return false;
         }
-        // Admins can observe all targets, but execution and approval always require explicit grants.
+        // Admins can observe all targets, but execution always requires an explicit grant.
         if ($action === 'view' && $this->admin($user, $project->workspace_id)) {
             return true;
         }
@@ -55,7 +55,7 @@ class Access
         $permission = EnvironmentPermission::where('environment_id', $environment->id)->where('user_id', $user->id)->first();
 
         return $permission?->can_view && match ($action) {
-            'view' => true, 'deploy' => $permission->can_deploy, 'approve' => $permission->can_approve, default => false,
+            'view' => true, 'deploy' => $permission->can_deploy, default => false,
         };
     }
 }

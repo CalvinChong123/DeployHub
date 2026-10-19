@@ -4,7 +4,6 @@ namespace Tests\Feature;
 
 use App\Jobs\ExecuteDeployment;
 use App\Models\Deployment;
-use App\Models\EnvironmentPermission;
 use App\Services\Deployment\DeploymentExecutor;
 use App\Services\Deployment\DeploymentScheduler;
 use Carbon\CarbonImmutable;
@@ -15,7 +14,6 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
-use Inertia\Testing\AssertableInertia as Assert;
 use Tests\Support\HubFixture;
 use Tests\TestCase;
 
@@ -102,20 +100,16 @@ class ScheduledDeploymentTest extends TestCase
         $this->assertNotSame($this->remote->target, $this->remote->head);
     }
 
-    public function test_scheduling_at_confirmation_preserves_independent_production_approval(): void
+    public function test_scheduling_at_confirmation_activates_production_without_approval(): void
     {
         $this->environment->update(['production' => true]);
         $review = $this->candidate();
         $this->actingAs($this->owner)->post('/deployments/'.$review->id.'/confirm', ['reviewed' => true, 'digest' => $review->digest,
             'scheduled_for' => now()->addDay()->toIso8601String(), 'schedule_timezone' => 'Asia/Kuala_Lumpur'])->assertSessionMissing('error');
         $scheduled = Deployment::where('idempotency_key', 'scheduled-preview:'.$review->id)->firstOrFail();
-        $this->assertSame('awaiting_approval', $scheduled->state);
+        $this->assertSame('scheduled', $scheduled->state);
         $this->assertNull($scheduled->active_environment_id);
-        $this->post('/deployments/'.$scheduled->id.'/approve', ['reviewed' => true, 'digest' => $scheduled->digest])->assertForbidden();
-        $approver = $this->member();
-        $this->actingAs($approver)->post('/deployments/'.$scheduled->id.'/approve', ['reviewed' => true, 'digest' => $scheduled->digest])->assertSessionMissing('error');
-        $this->assertSame('scheduled', $scheduled->fresh()->state);
-        $this->assertSame($scheduled->digest, $scheduled->approval->digest);
+        $this->assertNull($scheduled->approval);
         Queue::assertNothingPushed();
         $this->assertSame(1, $this->due($scheduled)['queued']);
         app(DeploymentExecutor::class)->execute($scheduled->id);
@@ -179,41 +173,35 @@ class ScheduledDeploymentTest extends TestCase
         $this->assertSame($d->target_sha, $this->remote->head);
     }
 
-    public function test_production_requires_independent_approval_before_the_time(): void
+    public function test_production_schedule_with_a_legacy_approval_flag_dispatches_without_approval(): void
     {
         $this->environment->update(['production' => true, 'requires_approval' => true]);
         $d = $this->scheduled();
         $this->confirm($d);
-        $this->assertSame('awaiting_approval', $d->fresh()->state);
-        $this->assertNull($d->fresh()->active_environment_id);
-        $this->post('/deployments/'.$d->id.'/approve', ['digest' => $d->digest, 'reviewed' => true])->assertForbidden();
-        $approver = $this->member();
-        $this->actingAs($approver)->post('/deployments/'.$d->id.'/approve', ['digest' => $d->digest, 'reviewed' => true])->assertSessionMissing('error');
         $this->assertSame('scheduled', $d->fresh()->state);
+        $this->assertNull($d->fresh()->active_environment_id);
+        $this->assertNull($d->approval);
         Queue::assertNothingPushed();
         $this->assertSame(1, $this->due($d)['queued']);
         app(DeploymentExecutor::class)->execute($d->id);
         $this->assertSame('succeeded', $d->fresh()->state);
     }
 
-    public function test_missing_or_late_approval_expires_without_queuing(): void
+    public function test_legacy_pending_schedule_expires_without_requester_reconfirmation(): void
     {
         $this->environment->update(['production' => true]);
         $d = $this->scheduled();
-        $this->confirm($d);
-        $approver = $this->member();
+        $d->update(['state' => 'awaiting_approval']);
         $this->travelTo($d->scheduled_for->copy()->addSecond());
-        $this->actingAs($approver)->get('/approvals')->assertInertia(fn (Assert $page) => $page
-            ->where('stats.approvals', 0)->where('deployments.total', 0));
-        $this->actingAs($approver)->post('/deployments/'.$d->id.'/approve', ['digest' => $d->digest, 'reviewed' => true])->assertSessionHas('error');
+        $this->actingAs($this->owner)->post('/deployments/'.$d->id.'/confirm', ['digest' => $d->digest, 'reviewed' => true])->assertSessionHas('error');
         $this->assertSame(1, app(DeploymentScheduler::class)->dispatchDue()['expired']);
         Queue::assertNothingPushed();
         $this->assertSame('expired', $d->fresh()->state);
     }
 
-    public function test_due_dispatch_rechecks_requester_approval_mfa_and_configuration(): void
+    public function test_due_dispatch_rechecks_requester_mfa_and_configuration(): void
     {
-        foreach (['requester', 'approver', 'mfa', 'configuration'] as $reason) {
+        foreach (['requester', 'mfa', 'configuration'] as $reason) {
             $this->travelBack();
             config(['deployhub.require_mfa' => false]);
             $this->owner->forceFill(['enabled' => true])->save();
@@ -228,16 +216,6 @@ class ScheduledDeploymentTest extends TestCase
             }
             if ($reason === 'configuration') {
                 $this->environment->increment('pipeline_version');
-            }
-            if ($reason === 'approver') {
-                $this->environment->update(['production' => true]);
-                // Prepare a new protected schedule with its own approval.
-                $d->update(['state' => 'cancelled']);
-                $d = $this->scheduled();
-                $this->confirm($d);
-                $approver = $this->member();
-                $this->actingAs($approver)->post('/deployments/'.$d->id.'/approve', ['digest' => $d->digest, 'reviewed' => true])->assertSessionMissing('error');
-                EnvironmentPermission::where('environment_id', $this->environment->id)->where('user_id', $approver->id)->update(['can_approve' => false]);
             }
             $this->remote->commands = [];
             $outcome = $this->due($d);

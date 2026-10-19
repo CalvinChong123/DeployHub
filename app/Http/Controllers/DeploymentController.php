@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use App\Jobs\ExecuteDeployment;
 use App\Models\Deployment;
 use App\Models\Environment;
 use App\Services\Access;
@@ -47,7 +46,7 @@ class DeploymentController extends Controller
         Gate::authorize('view', $deployment);
         $deployment->load(['environment.project', 'environment.server:id,name', 'user:id,name', 'steps', 'approval']);
 
-        return Inertia::render('Hub/Deployment', ['deployment' => $deployment, 'canConfirm' => Gate::allows('confirm', $deployment), 'canApprove' => Gate::allows('approve', $deployment), 'canRecover' => Gate::allows('deploy', $deployment->environment), 'canReconcile' => $access->admin($request->user(), $deployment->environment->project->workspace_id), 'workerOnline' => app(WorkerHealth::class)->status()['online'], 'scheduler' => app(DeploymentScheduler::class)->status()]);
+        return Inertia::render('Hub/Deployment', ['deployment' => $deployment, 'canConfirm' => Gate::allows('confirm', $deployment), 'canRecover' => Gate::allows('deploy', $deployment->environment), 'canReconcile' => $access->admin($request->user(), $deployment->environment->project->workspace_id), 'workerOnline' => app(WorkerHealth::class)->status()['online'], 'scheduler' => app(DeploymentScheduler::class)->status()]);
     }
 
     public function recover(Request $request, Deployment $deployment, CandidateService $candidates)
@@ -78,52 +77,10 @@ class DeploymentController extends Controller
         $message = match ($confirmed->state) {
             'scheduled' => 'Scheduled. The reviewed commit will enter the queue at the selected time.',
             'queued' => 'Queued. The worker will revalidate the exact candidate.',
-            'awaiting_approval' => 'Awaiting independent approval.',
             default => 'This deployment request has already been handled.',
         };
 
         return ($confirmed->id === $deployment->id ? back() : to_route('deployments.show', $confirmed))->with('message', $message);
-    }
-
-    public function approve(Request $request, Deployment $deployment, CandidateService $candidates)
-    {
-        Gate::authorize('approve', $deployment);
-        $request->validate(['digest' => 'required|string|size:64', 'reviewed' => 'accepted']);
-        DB::transaction(function () use ($request, $deployment, $candidates) {
-            $deployment = Deployment::whereKey($deployment->id)->lockForUpdate()->firstOrFail();
-            if ($deployment->state !== 'awaiting_approval') {
-                throw new DeploymentException('Only pending candidates can be approved.');
-            }
-            if (! hash_equals($deployment->digest, $request->string('digest')->toString())) {
-                throw new DeploymentException('Candidate digest does not match.');
-            }
-            $candidates->validate($deployment);
-            $deployment->approval()->create(['user_id' => $request->user()->id, 'digest' => $deployment->digest, 'outcome' => 'approved', 'expires_at' => $deployment->expires_at]);
-            $deployment->update(['state' => $deployment->scheduled_for ? 'scheduled' : 'queued']);
-            Audit::record($deployment->environment->project->workspace_id, $request->user()->id, 'deployment.approved', 'deployment:'.$deployment->id, ['digest' => $deployment->digest]);
-            if (! $deployment->scheduled_for) {
-                ExecuteDeployment::dispatch($deployment->id)->onConnection('database')->beforeCommit();
-            }
-        });
-
-        return back()->with('message', $deployment->fresh()->scheduled_for ? 'Exact candidate approved and scheduled.' : 'Exact candidate approved and queued.');
-    }
-
-    public function reject(Request $request, Deployment $deployment, LogSanitizer $sanitizer)
-    {
-        Gate::authorize('approve', $deployment);
-        $data = $request->validate(['reason' => 'required|string|max:200']);
-        DB::transaction(function () use ($request, $deployment, $data, $sanitizer) {
-            $deployment = Deployment::whereKey($deployment->id)->lockForUpdate()->firstOrFail();
-            if ($deployment->state !== 'awaiting_approval') {
-                throw new DeploymentException('Only pending candidates can be rejected.');
-            }
-            $deployment->approval()->create(['user_id' => $request->user()->id, 'digest' => $deployment->digest, 'outcome' => 'rejected', 'reason' => $sanitizer->clean($data['reason']), 'expires_at' => $deployment->expires_at]);
-            $deployment->update(['state' => 'rejected', 'active_environment_id' => null, 'finished_at' => now()]);
-            Audit::record($deployment->environment->project->workspace_id, $request->user()->id, 'deployment.rejected', 'deployment:'.$deployment->id);
-        });
-
-        return back()->with('message', 'Deployment rejected.');
     }
 
     public function cancel(Request $request, Deployment $deployment)

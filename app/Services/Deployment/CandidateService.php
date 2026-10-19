@@ -21,6 +21,7 @@ class CandidateService
     {
         $env->refresh()->load('server', 'project');
 
+        // Retain the retired approval field to validate existing immutable candidate digests.
         return ['environment_id' => $env->id, 'project_id' => $env->project_id, 'repository' => $env->project->repository,
             'server_id' => $env->server_id, 'host' => $env->server->host, 'port' => $env->server->port,
             'username' => $env->server->username, 'fingerprint' => $env->server->fingerprint,
@@ -227,7 +228,7 @@ class CandidateService
             throw new DeploymentException('Deployment candidate has expired. Create a fresh preview.');
         }
         if ($deployment->scheduled_for && in_array($deployment->state, ['awaiting_confirmation', 'awaiting_approval'], true) && $deployment->scheduled_for->lessThanOrEqualTo(now())) {
-            throw new DeploymentException('Scheduled time passed before confirmation or approval. Create a fresh schedule.');
+            throw new DeploymentException('Scheduled time passed before requester confirmation. Create a fresh schedule.');
         }
         if ($deployment->scheduled_for?->isFuture() && in_array($deployment->state, ['queued', 'running'], true)) {
             throw new DeploymentException('Scheduled deployment is not due yet.');
@@ -267,18 +268,6 @@ class CandidateService
         $legacyDigest = hash('sha256', json_encode([$snapshot, $deployment->starting_sha, $deployment->target_sha, $deployment->user_id], JSON_THROW_ON_ERROR));
         if (! hash_equals($deployment->digest, $this->digest($snapshot, $deployment->starting_sha, $deployment->target_sha, $deployment->user_id)) && ! hash_equals($deployment->digest, $legacyDigest)) {
             throw new DeploymentException('Candidate integrity check failed. Create a fresh preview.');
-        }
-    }
-
-    public function validateApproval(Deployment $deployment): void
-    {
-        if (! $deployment->candidate['requires_approval'] && ! $deployment->candidate['production']) {
-            return;
-        }
-        $approval = $deployment->approval()->first();
-        $approver = $approval ? User::find($approval->user_id) : null;
-        if (! $approval || $approval->outcome !== 'approved' || $approval->expires_at->isPast() || ! hash_equals($deployment->digest, $approval->digest) || ! $approver || $approver->id === $deployment->user_id || ! $this->access->environment($approver, $deployment->environment, 'approve') || (config('deployhub.require_mfa') && ! $approver->two_factor_confirmed_at)) {
-            throw new DeploymentException('Independent approval is missing, expired or no longer authorized.');
         }
     }
 }

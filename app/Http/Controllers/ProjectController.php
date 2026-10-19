@@ -39,7 +39,7 @@ class ProjectController extends Controller
             'defaultHooks' => [], 'initial' => ['copy_of' => $environment->id, 'name' => mb_substr($environment->project->name.' — Copy', 0, 100),
                 'repository' => $environment->project->repository, 'description' => $environment->project->description ?? '',
                 'environment_name' => $environment->name, 'server_id' => $environment->server_id, 'path' => '', 'branch' => $environment->branch,
-                'production' => $environment->production, 'requires_approval' => $environment->requires_approval, 'pipeline' => [],
+                'production' => $environment->production, 'pipeline' => [],
                 'hooks' => $hooks, 'health_url' => $environment->health_url ?? ''],
         ]);
     }
@@ -50,7 +50,7 @@ class ProjectController extends Controller
             'environment_name' => [Rule::unique('environments', 'name')->where('project_id', $projectId)->ignore($request->route('environment')?->id)],
             'path' => [Rule::unique('environments', 'path')->where('server_id', $request->input('server_id'))->whereNull('deleted_at')->ignore($request->route('environment')?->id)],
         ]);
-        $data = $request->validate(['environment_name' => 'required|string|max:50', 'server_id' => 'required|integer', 'path' => 'required|string|max:255', 'branch' => 'required|string|max:200', 'production' => 'required|boolean', 'requires_approval' => 'required|boolean', 'pipeline' => 'present|array|max:5', 'pipeline.*' => 'required|string|distinct|in:'.implode(',', CommandBuilder::STEPS), 'health_url' => 'nullable|string|max:255']);
+        $data = $request->validate(['environment_name' => 'required|string|max:50', 'server_id' => 'required|integer', 'path' => 'required|string|max:255', 'branch' => 'required|string|max:200', 'production' => 'required|boolean', 'pipeline' => 'present|array|max:5', 'pipeline.*' => 'required|string|distinct|in:'.implode(',', CommandBuilder::STEPS), 'health_url' => 'nullable|string|max:255']);
         abort_unless(Server::whereKey($data['server_id'])->where('workspace_id', $request->user()->workspace()->id)->exists(), 422, 'Select a server from this workspace.');
         $hookData = $request->validate([
             'hooks' => 'sometimes|array|max:26',
@@ -87,7 +87,7 @@ class ProjectController extends Controller
             $commands->healthUrl($data['health_url'] ?? null);
         }
         $data['pipeline'] = array_values(array_intersect(CommandBuilder::STEPS, $data['pipeline']));
-        $data['requires_approval'] = $data['production'] || $data['requires_approval'];
+        $data['requires_approval'] = false;
         $data['name'] = $data['environment_name'];
         unset($data['environment_name']);
 
@@ -98,7 +98,7 @@ class ProjectController extends Controller
     {
         $env->project->users()->syncWithoutDetaching([$user]);
         $env->server->users()->syncWithoutDetaching([$user]);
-        $env->permissions()->create(['user_id' => $user, 'can_view' => true, 'can_deploy' => true, 'can_approve' => true]);
+        $env->permissions()->create(['user_id' => $user, 'can_view' => true, 'can_deploy' => true]);
     }
 
     public function store(Request $request, CommandBuilder $commands)
@@ -189,11 +189,12 @@ class ProjectController extends Controller
     public function grant(Request $request, Environment $environment)
     {
         Gate::authorize('manage', $environment);
-        $data = $request->validate(['user_id' => 'required|integer', 'can_view' => 'required|boolean', 'can_deploy' => 'required|boolean', 'can_approve' => 'required|boolean']);
+        $data = $request->validate(['user_id' => 'required|integer', 'can_view' => 'required|boolean', 'can_deploy' => 'required|boolean']);
+        $data['can_approve'] = false;
         $member = $request->user()->workspace()->users()->where('users.id', $data['user_id'])->first();
         abort_unless($member, 422, 'Member is outside this workspace.');
         if ($member->pivot->role === 'viewer') {
-            $data['can_deploy'] = $data['can_approve'] = false;
+            $data['can_deploy'] = false;
         }
         DB::transaction(function () use ($environment, $request, $data) {
             $environment = Environment::whereKey($environment->id)->lockForUpdate()->firstOrFail();

@@ -50,7 +50,6 @@ const configuration = useForm({
     path: env.path,
     branch: env.branch,
     production: env.production,
-    requires_approval: env.requires_approval,
     pipeline: [] as string[],
     hooks: (env.hooks || []).map((hook) => ({ ...hook })),
     health_url: env.health_url || "",
@@ -78,7 +77,6 @@ const grant = useForm({
     user_id: "",
     can_view: true,
     can_deploy: false,
-    can_approve: false,
 });
 function selectMember() {
     const permission = props.permissions.find(
@@ -86,7 +84,6 @@ function selectMember() {
     );
     grant.can_view = permission?.can_view ?? true;
     grant.can_deploy = permission?.can_deploy ?? false;
-    grant.can_approve = permission?.can_approve ?? false;
 }
 </script>
 <template>
@@ -132,7 +129,7 @@ function selectMember() {
                         {{ environment.name }} · {{ environment.server.name }}
                     </p>
                     <small v-if="environment.production" class="muted"
-                        >Production · independent approval</small
+                        >Production</small
                     >
                 </div>
                 <div>
@@ -432,7 +429,7 @@ function selectMember() {
         <section v-if="tab === 'pipeline & settings'" class="card">
             <div class="card-heading">
                 <h2>
-                    Approved pipeline · version
+                    Deployment pipeline · version
                     {{ environment.pipeline_version }}
                 </h2>
             </div>
@@ -481,7 +478,7 @@ function selectMember() {
                     <h2>Environment access</h2>
                     <p>
                         Explicit grants cover this environment, project and
-                        server. Viewers cannot deploy or approve.
+                        server. Viewers cannot deploy.
                     </p>
                 </div>
             </div>
@@ -493,7 +490,6 @@ function selectMember() {
                                 <th>Member</th>
                                 <th>View</th>
                                 <th>Deploy</th>
-                                <th>Approve</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -516,15 +512,6 @@ function selectMember() {
                                         permissions.find(
                                             (p) => p.user_id === member.id,
                                         )?.can_deploy
-                                            ? "Yes"
-                                            : "No"
-                                    }}
-                                </td>
-                                <td>
-                                    {{
-                                        permissions.find(
-                                            (p) => p.user_id === member.id,
-                                        )?.can_approve
                                             ? "Yes"
                                             : "No"
                                     }}
@@ -571,11 +558,6 @@ function selectMember() {
                                 v-model="grant.can_deploy"
                                 type="checkbox"
                             />Deploy</label
-                        ><label class="check"
-                            ><input
-                                v-model="grant.can_approve"
-                                type="checkbox"
-                            />Approve</label
                         >
                     </div>
                     <div class="form-actions">

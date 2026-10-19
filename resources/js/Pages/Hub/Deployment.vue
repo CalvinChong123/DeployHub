@@ -9,7 +9,6 @@ import { date, short, stepLabel, duration, type Deployment } from "@/hub-types";
 const props = defineProps<{
     deployment: Deployment;
     canConfirm: boolean;
-    canApprove: boolean;
     canRecover: boolean;
     canReconcile: boolean;
     workerOnline: boolean;
@@ -178,11 +177,8 @@ function submitConfirmation() {
                   }
                 : {}),
         }))
-        .post(
-            `/deployments/${current.value.id}/${current.value.state === "awaiting_approval" ? "approve" : "confirm"}`,
-        );
+        .post(`/deployments/${current.value.id}/confirm`);
 }
-const reject = useForm({ reason: "" });
 const cancel = useForm({});
 const recovery = useForm({ idempotency_key: crypto.randomUUID() });
 const reconciliation = useForm({ reason: "", remote_processes_stopped: false });
@@ -289,7 +285,7 @@ async function copyLogs() {
                 class="btn"
                 >← Back to project</Link
             ><HubStatus :state="current.state" /><a
-                v-if="reviewing && (canConfirm || canApprove)"
+                v-if="reviewing && canConfirm"
                 href="#deployment-confirmation"
                 class="btn primary"
                 >Review & confirm ↓</a
@@ -301,6 +297,10 @@ async function copyLogs() {
         <div v-if="current.environment?.deleted_at" class="notice">
             This project registration was deleted. Deployment history remains
             available for review.
+        </div>
+        <div v-if="current.state === 'awaiting_approval'" class="notice">
+            Independent approval has been retired. The requester must review and
+            confirm this existing request before execution.
         </div>
         <div v-if="current.error" class="notice error" role="alert">
             {{ current.error }}
@@ -321,7 +321,7 @@ async function copyLogs() {
                     After resolving the failure, prepare a fresh review at this
                     exact commit. Recovery reruns every selected pipeline step
                     and enabled hooks from the beginning without a Git merge.
-                    Production recovery requires fresh independent approval.
+                    Review and confirm this recovery before execution.
                 </p>
                 <HubErrors :errors="recovery.errors" />
                 <div class="form-actions">
@@ -371,7 +371,7 @@ async function copyLogs() {
                     current.state === "scheduled"
                         ? "Confirmed; waiting for automatic dispatch."
                         : current.state === "awaiting_approval"
-                          ? "Independent approval must be completed before this time."
+                          ? "The requester must confirm this legacy request before this time."
                           : current.state === "awaiting_confirmation"
                             ? "Confirm below to activate the schedule."
                             : ""
@@ -466,7 +466,7 @@ async function copyLogs() {
                         </div>
                     </div>
                     <details class="candidate-details">
-                        <summary>Commit, path & approval details</summary>
+                        <summary>Commit & path details</summary>
                         <div class="meta-grid">
                             <div>
                                 <span class="meta-label">Starting HEAD</span
@@ -499,15 +499,11 @@ async function copyLogs() {
                                     date(current.expires_at)
                                 }}</span>
                             </div>
-                            <div>
-                                <span class="meta-label">Approval</span
+                            <div v-if="current.approval">
+                                <span class="meta-label"
+                                    >Historical approval</span
                                 ><span class="meta-value">{{
-                                    current.approval
-                                        ? `${current.approval.outcome} by member #${current.approval.user_id}`
-                                        : current.candidate.requires_approval ||
-                                            current.candidate.production
-                                          ? "Independent review required"
-                                          : "Direct staging confirmation"
+                                    `${current.approval.outcome} by member #${current.approval.user_id}`
                                 }}</span>
                                 <p
                                     v-if="current.approval?.reason"
@@ -633,13 +629,7 @@ async function copyLogs() {
                 id="deployment-confirmation"
             >
                 <div class="card-heading">
-                    <h2>
-                        {{
-                            current.state === "awaiting_approval"
-                                ? "Independent approval"
-                                : "Confirm deployment"
-                        }}
-                    </h2>
+                    <h2>Confirm deployment</h2>
                 </div>
                 <div class="card-content">
                     <p class="muted">
@@ -648,12 +638,7 @@ async function copyLogs() {
                         {{ current.candidate.branch }}
                     </p>
                     <form
-                        v-if="
-                            (canConfirm &&
-                                current.state === 'awaiting_confirmation') ||
-                            (canApprove &&
-                                current.state === 'awaiting_approval')
-                        "
+                        v-if="canConfirm"
                         @submit.prevent="submitConfirmation"
                     >
                         <HubErrors :errors="confirm.errors" />
@@ -701,8 +686,8 @@ async function copyLogs() {
                                 />
                                 <small
                                     >Choose a time within 30 days. The reviewed
-                                    commit and workflow are used. Production
-                                    requires approval before this time.</small
+                                    commit and workflow are used. Confirm before
+                                    this time.</small
                                 >
                                 <p v-if="confirm.scheduled_for" class="muted">
                                     Scheduled for
@@ -756,56 +741,21 @@ async function copyLogs() {
                                 "
                             >
                                 {{
-                                    current.state === "awaiting_approval"
-                                        ? "Approve exact candidate"
-                                        : current.candidate.requires_approval ||
-                                            current.candidate.production
-                                          ? "Request independent approval"
-                                          : current.scheduled_for ||
-                                              timing === "schedule"
-                                            ? "Schedule deployment"
-                                            : "Deploy now"
+                                    current.scheduled_for ||
+                                    timing === "schedule"
+                                        ? "Schedule deployment"
+                                        : "Deploy now"
                                 }}
                             </button>
                         </div>
                     </form>
-                    <form
-                        v-if="
-                            canApprove && current.state === 'awaiting_approval'
-                        "
-                        @submit.prevent="
-                            reject.post(`/deployments/${current.id}/reject`)
-                        "
-                    >
-                        <HubErrors :errors="reject.errors" />
-                        <div class="field">
-                            <label for="reason">Rejection reason</label
-                            ><input
-                                id="reason"
-                                v-model="reject.reason"
-                                required
-                                maxlength="200"
-                                placeholder="Describe what needs to change"
-                            />
-                        </div>
-                        <div class="form-actions">
-                            <button
-                                class="btn danger"
-                                :disabled="reject.processing"
-                            >
-                                Reject request
-                            </button>
-                        </div>
-                    </form>
                     <p
-                        v-if="
-                            current.state === 'awaiting_approval' && !canApprove
-                        "
+                        v-if="!canConfirm"
                         class="muted"
                         style="margin-top: 15px"
                     >
-                        An independent member with approval permission must
-                        review this candidate.
+                        Only the requester with current deployment permission
+                        can confirm this request.
                     </p>
                 </div>
             </aside>

@@ -24,7 +24,7 @@ const search = ref(props.filters.q);
 const state = ref(props.filters.state);
 let filterTimer: ReturnType<typeof setTimeout>;
 watch([search, state], () => {
-    if (!["activity", "approvals"].includes(props.section)) return;
+    if (props.section !== "activity") return;
     clearTimeout(filterTimer);
     filterTimer = setTimeout(
         () =>
@@ -45,7 +45,6 @@ const title = computed(
             dashboard: "Overview",
             "projects.index": "Projects",
             activity: "Deployment activity",
-            approvals: "Approvals",
         })[props.section] || "Overview",
 );
 const rows = computed(() =>
@@ -66,9 +65,7 @@ const history = computed(() => props.deployments.data);
         :subtitle="
             section === 'projects.index'
                 ? 'Your deployment targets and latest results.'
-                : section === 'approvals'
-                  ? 'Review requests before they can deploy.'
-                  : 'Recent deployments and requests that need your attention.'
+                : 'Recent deployments and requests that need your attention.'
         "
     >
         <template #actions
@@ -104,13 +101,6 @@ const history = computed(() => props.deployments.data);
                         detail: 'Confirmed and waiting',
                         icon: '↗',
                         href: '/activity?state=scheduled',
-                    },
-                    {
-                        label: 'Needs approval',
-                        value: stats.approvals,
-                        detail: 'Independent review required',
-                        icon: '✓',
-                        href: '/approvals',
                     },
                 ]"
                 :key="item.label"
@@ -219,7 +209,7 @@ const history = computed(() => props.deployments.data);
                                     · {{ row.env.server.name }}
                                 </p>
                                 <small v-if="row.env.production" class="muted"
-                                    >Production · approval required</small
+                                    >Production</small
                                 >
                             </td>
                             <td>
@@ -306,20 +296,8 @@ const history = computed(() => props.deployments.data);
         <section v-if="section !== 'projects.index'" class="card">
             <div class="card-heading">
                 <div>
-                    <h2>
-                        {{
-                            section === "approvals"
-                                ? "Production & protected environment approvals"
-                                : "Recent deployments"
-                        }}
-                    </h2>
-                    <p>
-                        {{
-                            section === "approvals"
-                                ? "Approval is bound to an exact commit and pipeline. Requesters cannot self-approve."
-                                : "Who shipped what, where and how it finished."
-                        }}
-                    </p>
+                    <h2>Recent deployments</h2>
+                    <p>Who shipped what, where and how it finished.</p>
                 </div>
                 <div class="stack">
                     <input
@@ -358,24 +336,17 @@ const history = computed(() => props.deployments.data);
                 </div>
             </div>
             <div v-if="!history.length" class="empty">
-                <div class="empty-symbol">
-                    {{ section === "approvals" ? "✓" : "↗" }}
-                </div>
+                <div class="empty-symbol">↗</div>
                 <h2>
                     {{
-                        section === "approvals"
-                            ? "No pending approvals"
-                            : search || state !== "all"
-                              ? "No matching deployments"
-                              : "No deployments yet"
+                        search || state !== "all"
+                            ? "No matching deployments"
+                            : "No deployments yet"
                     }}
                 </h2>
                 <p>
-                    {{
-                        section === "approvals"
-                            ? "Protected deployment requests will appear here for independent review."
-                            : "Every confirmed deployment will leave a trace here, including its steps and sanitized output."
-                    }}
+                    Every confirmed deployment will leave a trace here,
+                    including its steps and sanitized output.
                 </p>
             </div>
             <div v-else class="table-wrap">
