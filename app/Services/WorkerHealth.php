@@ -16,6 +16,6 @@ class WorkerHealth
         $busyTime = $busy ? Carbon::parse($busy, 'UTC') : null;
         $seen = $idleTime && $busyTime ? ($idleTime->greaterThan($busyTime) ? $idleTime : $busyTime) : ($idleTime ?? $busyTime);
 
-        return ['online' => ($idleTime && $idleTime->greaterThan(now()->subSeconds(90))) || ($busyTime && $busyTime->greaterThan(now()->subSeconds(150))), 'seen_at' => $seen?->toIso8601String()];
+        return ['online' => ($idleTime && $idleTime->greaterThan(now()->subSeconds(90))) || ($busyTime && $busyTime->greaterThan(now()->subSeconds(config('deployhub.command_timeout') + 30))), 'seen_at' => $seen?->toIso8601String()];
     }
 }

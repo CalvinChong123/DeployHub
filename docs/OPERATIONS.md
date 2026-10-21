@@ -39,7 +39,7 @@ php artisan queue:work database --queue=default --sleep=2 --tries=1 --timeout=96
 php artisan schedule:work
 ```
 
-Idle worker heartbeats expire after 90 seconds; running command heartbeats are considered recent for 150 seconds. The dashboard reports recent evidence, not an infallible process monitor. Queued requests remain queued when the worker is absent and are revalidated when a worker resumes.
+Idle worker heartbeats expire after 90 seconds; running command heartbeats are considered recent for the command timeout plus 30 seconds (210 seconds by default). The dashboard reports recent evidence, not an infallible process monitor. Queued requests remain queued when the worker is absent and are revalidated when a worker resumes.
 
 The scheduler dispatches due deployments and runs candidate/crash reconciliation every minute, and prunes old step output daily. The deployment review warns when its dispatcher heartbeat is absent or older than 90 seconds, including a freshly started scheduler before its first minute tick. Deployment/audit metadata is retained. `DEPLOYHUB_LOG_RETENTION_DAYS` defaults to 30.
 
@@ -49,7 +49,7 @@ Keep the DeployHub machine awake, MySQL available and both background commands r
 
 After changing application worker code, run `php artisan queue:restart`; supervised workers restart automatically, while manually managed workers need the queue command started again. Restart `schedule:work` after application updates as well.
 
-The primary database queue is an intentional MVP choice: reservation and job creation share a transaction. Run the worker on the `database` connection even if another unrelated queue driver is configured. Keep retry-after at least 1,200 seconds, greater than the worker timeout. Windows lacks normal Unix process timeout behavior; command timeouts and the executor budget still apply, and orphaned jobs are handled conservatively. On Linux, supervise worker/scheduler processes with an appropriate service manager.
+The primary database queue is an intentional MVP choice: reservation and job creation share a transaction. Run the worker on the `database` connection even if another unrelated queue driver is configured. Each SSH command or hook has a 180-second timeout; the executor budget remains 900 seconds, reserving the final 180 seconds before starting another step. The queue worker timeout is 960 seconds. Keep retry-after at least 1,200 seconds, greater than the worker timeout, and the environment lock lease at 1,200 seconds. Windows lacks normal Unix process timeout behavior; command timeouts and the executor budget still apply, and orphaned jobs are handled conservatively. On Linux, supervise worker/scheduler processes with an appropriate service manager.
 
 ## Registering a target
 

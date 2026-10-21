@@ -177,6 +177,8 @@ php artisan schedule:work
 
 确认部署后一直显示 **Queued**，先检查队列 worker 是否开启。应用更新后需要重启手动启动的 worker 和 scheduler，让后台使用新代码。
 
+每条 SSH 命令或自定义 Hook 的超时时间为 3 分钟，整个部署的执行预算仍为 15 分钟。命令超时后会停止后续步骤并标记为 **Unknown**，需要管理员检查远程状态后进行 reconciliation。
+
 ## 7. 查看结果与常见卡点
 
 部署详情中的 **Deployment progress** 展示仓库检查、Pre、Git 更新、Post 和最终验证的实际状态，以及各步骤耗时。未执行的阶段不会显示成功；正在运行的步骤会突出显示。成功输出默认收起，可点击 **View output**；失败或状态 Unknown 的输出默认展开。状态自动更新，部署结束后无需手动刷新页面；命令输出在该命令完成后显示。
